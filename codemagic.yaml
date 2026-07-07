@@ -1,30 +1,27 @@
 workflows:
   ios-testflight:
+    name: iOS TestFlight
+    max_build_duration: 60
+    instance_type: mac_mini_m2
     integrations:
-      app_store_connect: "Hi Car"    # tên bạn đặt trên Codemagic
-
+      app_store_connect: "Hi Car"
     environment:
       ios_signing:
         distribution_type: app_store
-        bundle_identifier: "com.hicar.ora.limited"   # đổi đúng bundle ID project bạn
+        bundle_identifier: "com.hicar.ora.limited"
       xcode: latest
       cocoapods: default
-
     scripts:
-      - name: Setup FVM
-        script: |
-          dart pub global activate fvm
-          export PATH="$PATH:$HOME/.pub-cache/bin"
-          fvm install
-      - name: Get Flutter packages
-        script: fvm flutter pub get
-      - name: Install pods
-        script: |
-          find . -name "Podfile" -execdir pod install \;
-      # ↓ THÊM BƯỚC NÀY (quan trọng)
+      # ... giữ nguyên FVM, pub get, pod install ...
       - name: Set up code signing settings on Xcode project
         script: xcode-project use-profiles
       - name: Flutter build IPA
         script: |
           fvm flutter build ipa --release \
             --export-options-plist=$HOME/export_options.plist
+    artifacts:
+      - build/ios/ipa/*.ipa
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
