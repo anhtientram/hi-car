@@ -1,15 +1,15 @@
 workflows:
   ios-testflight:
-    name: iOS TestFlight (submit-automation)
-    max_build_duration: 60
-    instance_type: mac_mini_m2
     integrations:
-      app_store_connect: "Hi Car"
+      app_store_connect: "Hi Car"    # tên bạn đặt trên Codemagic
+
     environment:
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: "com.hicar.ora.limited"   # đổi đúng bundle ID project bạn
       xcode: latest
       cocoapods: default
-      vars:
-        BUNDLE_ID: "com.hicar.ora.limited"
+
     scripts:
       - name: Setup FVM
         script: |
@@ -21,33 +21,10 @@ workflows:
       - name: Install pods
         script: |
           find . -name "Podfile" -execdir pod install \;
+      # ↓ THÊM BƯỚC NÀY (quan trọng)
+      - name: Set up code signing settings on Xcode project
+        script: xcode-project use-profiles
       - name: Flutter build IPA
-        script: fvm flutter build ipa --release
-    artifacts:
-      - build/ios/ipa/*.ipa
-      - /tmp/xcodebuild_logs/*.log
-    publishing:
-      app_store_connect:
-        auth: integration
-        submit_to_testflight: true
-        beta_groups:
-          - Internal Testers
-
-  android-release:
-    name: Android Release (submit-automation)
-    max_build_duration: 60
-    instance_type: mac_mini_m2
-    environment:
-      java: 17
-    scripts:
-      - name: Setup FVM
         script: |
-          dart pub global activate fvm
-          export PATH="$PATH:$HOME/.pub-cache/bin"
-          fvm install
-      - name: Get Flutter packages
-        script: fvm flutter pub get
-      - name: Build App Bundle
-        script: fvm flutter build appbundle --release
-    artifacts:
-      - build/app/outputs/bundle/release/*.aab
+          fvm flutter build ipa --release \
+            --export-options-plist=$HOME/export_options.plist
