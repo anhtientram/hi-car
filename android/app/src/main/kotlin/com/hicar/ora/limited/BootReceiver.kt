@@ -98,6 +98,11 @@ class BootReceiver : BroadcastReceiver() {
             return
         }
 
+        if (isUnlockRetry && BootSessionManager.hasPlaybackStarted(context, bootSessionId)) {
+            HiCarDiagnosticLog.d("HiCarBoot", "Unlock retry skip – boot session $bootSessionId đã bắt đầu phát")
+            return
+        }
+
         HiCarDiagnosticLog.d("HiCarBoot", "Boot trigger OK – connectionMode=$connectionMode, action=${intent.action}, session=$bootSessionId")
 
         val serviceIntent = Intent(context, AudioForegroundService::class.java).apply {

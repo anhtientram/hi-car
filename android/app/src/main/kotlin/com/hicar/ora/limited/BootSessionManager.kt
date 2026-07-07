@@ -17,6 +17,7 @@ object BootSessionManager {
     private const val KEY_SESSION = "boot_session_id"
     private const val KEY_COMPLETED = "last_completed_boot_session_id"
     private const val KEY_MISS_REPORTED = "boot_miss_reported_session_id"
+    private const val KEY_PLAYBACK_STARTED = "boot_playback_started_session_id"
     private const val KEY_LAST_INCREMENT_MS = "last_boot_increment_at_ms"
     private const val BOOT_INCREMENT_DEBOUNCE_MS = 60_000L
 
@@ -57,6 +58,25 @@ object BootSessionManager {
     fun isSessionCompleted(context: Context, sessionId: Long): Boolean {
         if (sessionId <= 0L) return false
         return prefs(context).getLong(KEY_COMPLETED, -1L) >= sessionId
+    }
+
+    /** Box: đã start MediaPlayer cho session này (persist, sống qua kill process). */
+    fun hasPlaybackStarted(context: Context, sessionId: Long): Boolean {
+        if (sessionId <= 0L) return false
+        return prefs(context).getLong(KEY_PLAYBACK_STARTED, -1L) == sessionId
+    }
+
+    fun markPlaybackStarted(context: Context, sessionId: Long) {
+        if (sessionId <= 0L) return
+        prefs(context).edit().putLong(KEY_PLAYBACK_STARTED, sessionId).apply()
+        HiCarDiagnosticLog.d("HiCarBoot", "Boot session $sessionId playback started (persisted)")
+    }
+
+    /** Ẩn cảnh báo boot oan trên UI khi session đã phát hoặc đã chốt. */
+    fun shouldSuppressBootWarnings(context: Context): Boolean {
+        val sessionId = getCurrentSession(context)
+        if (sessionId <= 0L) return false
+        return isSessionCompleted(context, sessionId) || hasPlaybackStarted(context, sessionId)
     }
 
     fun markSessionCompleted(context: Context, sessionId: Long, reason: String = "completed") {

@@ -76,7 +76,8 @@ object HiCarDiagnosticLog {
 
     fun e(tag: String, message: String) = write("E", tag, message)
 
-    fun hasErrorLines(): Boolean = buffer.any { isErrorLine(it) }
+    fun hasErrorLines(context: Context? = null): Boolean =
+        getFilteredErrorLines(context).isNotEmpty()
 
     fun getFullLog(): String {
         if (buffer.isEmpty()) return ""
@@ -84,9 +85,9 @@ object HiCarDiagnosticLog {
     }
 
     /** E/W lines plus a few surrounding D lines for context. */
-    fun getErrorLog(): String {
-        if (buffer.isEmpty()) return ""
-        val lines = buffer.toList()
+    fun getErrorLog(context: Context? = null): String {
+        val lines = getFilteredErrorLines(context)
+        if (lines.isEmpty()) return ""
         val include = BooleanArray(lines.size)
         for (i in lines.indices) {
             if (isErrorLine(lines[i])) {
@@ -96,6 +97,23 @@ object HiCarDiagnosticLog {
             }
         }
         return lines.indices.filter { include[it] }.joinToString("\n") { lines[it] }
+    }
+
+    private fun getFilteredErrorLines(context: Context?): List<String> {
+        if (buffer.isEmpty()) return emptyList()
+        val lines = buffer.toList()
+        if (context == null || !BootSessionManager.shouldSuppressBootWarnings(context)) {
+            return lines
+        }
+        return lines.filterNot { isStaleBoxBootWarning(it) }
+    }
+
+    /** Cảnh báo poll/best-effort boot — oan sau khi box đã phát được. */
+    private fun isStaleBoxBootWarning(line: String): Boolean {
+        if (!line.contains(" W HiCarService")) return false
+        return line.contains("Boot watch: timeout") ||
+            line.contains("phát best-effort (alarm retry") ||
+            line.contains("Box boot greeting phát best-effort")
     }
 
     fun clear() {

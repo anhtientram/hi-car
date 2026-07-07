@@ -173,7 +173,7 @@ class HiCarPlugin : FlutterPlugin, MethodCallHandler {
             }
             "getDiagnosticLogErrors" -> {
                 HiCarDiagnosticLog.init(context)
-                result.success(HiCarDiagnosticLog.getErrorLog())
+                result.success(HiCarDiagnosticLog.getErrorLog(context))
             }
             "getDiagnosticLogFull" -> {
                 HiCarDiagnosticLog.init(context)
@@ -181,7 +181,7 @@ class HiCarPlugin : FlutterPlugin, MethodCallHandler {
             }
             "hasDiagnosticErrors" -> {
                 HiCarDiagnosticLog.init(context)
-                result.success(HiCarDiagnosticLog.hasErrorLines())
+                result.success(HiCarDiagnosticLog.hasErrorLines(context))
             }
             "clearDiagnosticLog" -> {
                 HiCarDiagnosticLog.init(context)

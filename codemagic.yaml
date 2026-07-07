@@ -1,0 +1,53 @@
+workflows:
+  ios-testflight:
+    name: iOS TestFlight (submit-automation)
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    integrations:
+      app_store_connect: codemagic
+    environment:
+      xcode: latest
+      cocoapods: default
+      vars:
+        BUNDLE_ID: "com.hicar.ora.limited"
+    scripts:
+      - name: Setup FVM
+        script: |
+          dart pub global activate fvm
+          export PATH="$PATH:$HOME/.pub-cache/bin"
+          fvm install
+      - name: Get Flutter packages
+        script: fvm flutter pub get
+      - name: Install pods
+        script: |
+          find . -name "Podfile" -execdir pod install \;
+      - name: Flutter build IPA
+        script: fvm flutter build ipa --release
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
+        beta_groups:
+          - Internal Testers
+
+  android-release:
+    name: Android Release (submit-automation)
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    environment:
+      java: 17
+    scripts:
+      - name: Setup FVM
+        script: |
+          dart pub global activate fvm
+          export PATH="$PATH:$HOME/.pub-cache/bin"
+          fvm install
+      - name: Get Flutter packages
+        script: fvm flutter pub get
+      - name: Build App Bundle
+        script: fvm flutter build appbundle --release
+    artifacts:
+      - build/app/outputs/bundle/release/*.aab
