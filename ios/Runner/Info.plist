@@ -56,5 +56,8 @@
 	<!-- flutter_blue_plus được liên kết sẵn; iOS yêu cầu mô tả này nếu app truy cập Bluetooth -->
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Ứng dụng dùng Bluetooth để nhận biết khi điện thoại kết nối với xe.</string>
+	<!-- Thư viện âm thanh (just_audio/audio_session) tham chiếu API microphone; iOS bắt buộc khai báo dù app không thu âm -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Ứng dụng không ghi âm. Quyền micro chỉ do thư viện phát âm thanh yêu cầu để phát lời chào/tạm biệt trên xe.</string>
 </dict>
 </plist>
