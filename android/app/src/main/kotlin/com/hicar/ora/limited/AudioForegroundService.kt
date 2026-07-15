@@ -137,6 +137,8 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
     private var bootCompletionFallbackRunnable: Runnable? = null
     private var bootAudioFocusRequest: AudioFocusRequest? = null
     private var bootPlaybackUsesBootFocus: Boolean = false
+    // Chỉ mở lại alarm retry MỘT lần mỗi phiên khi MediaPlayer lỗi (chống loop lỗi liên tục).
+    private var bootErrorRetryScheduledForSession: Long = -1L
 
     // ==============================
     // Lifecycle
@@ -509,6 +511,7 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
         if (sessionFromIntent != activeBootSessionId) {
             activeBootSessionId = sessionFromIntent
             bootGreetingHandled = false
+            bootErrorRetryScheduledForSession = -1L
             bootPlaybackEverStartedForSession = -1L
             bootPlaybackStartedAtMs = 0L
             bootPlaybackDurationMs = 0L
@@ -596,6 +599,9 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
     private fun maybeCompleteBootSessionOnInterrupt() {
         loadPrefs()
         if (connectionMode != "android_box_mode" || completingBootSessionId <= 0L) return
+        // Bị ngắt chủ động (bấm dừng / focus loss / BT disconnect) sau khi đã phát ≥5s →
+        // chốt phiên luôn (kể cả best-effort) để alarm retry KHÔNG phát lại lần nữa gây lặp.
+        // Nguồn ngắt chủ động ngụ ý hệ thống audio đang hoạt động → lần phát này có ra tiếng.
         val playedMs = if (bootPlaybackStartedAtMs > 0L) {
             SystemClock.elapsedRealtime() - bootPlaybackStartedAtMs
         } else {
@@ -614,14 +620,41 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
         if (sessionId <= 0L) return
         loadPrefs()
         if (connectionMode != "android_box_mode") return
-        bootGreetingHandled = true
+
         bootPlaybackEverStartedForSession = sessionId
-        BootSessionManager.markPlaybackStarted(this, sessionId)
-        BootSessionManager.cancelBootRetryAlarms(this)
-        HiCarDiagnosticLog.d(
-            "HiCarService",
-            "Box boot playback started (session=$sessionId, focus=$hadFocus) → alarms cancelled"
-        )
+
+        if (hadFocus) {
+            // ✅ Có audio focus = loa/route đã sẵn sàng → coi là phát THẬT: chốt trạng thái,
+            //    hủy alarm retry để KHÔNG phát lại (chống lặp).
+            bootGreetingHandled = true
+            BootSessionManager.markPlaybackStarted(this, sessionId)
+            BootSessionManager.cancelBootRetryAlarms(this)
+            HiCarDiagnosticLog.d(
+                "HiCarService",
+                "Box boot playback started (session=$sessionId, focus=true) → alarms cancelled"
+            )
+        } else {
+            // ⚠️ Best-effort (chưa xin được audio focus): rất có thể phát vào "hư không"
+            //    (audio HAL chưa sẵn sàng lúc cold boot). Mặc định KHÔNG chốt & GIỮ alarm retry
+            //    để lần sau (khi có focus) phát lại cho chắc ra tiếng → tránh boot "không phát".
+            //    NHƯNG giới hạn số lần: box không bao giờ cấp focus thì sau vài lần ta chốt luôn
+            //    để tránh phát lặp nhiều lần.
+            val attempts = BootSessionManager.incrementBestEffortAttempt(this, sessionId)
+            if (attempts >= BootSessionManager.MAX_BEST_EFFORT_ATTEMPTS) {
+                bootGreetingHandled = true
+                BootSessionManager.markPlaybackStarted(this, sessionId)
+                BootSessionManager.cancelBootRetryAlarms(this)
+                HiCarDiagnosticLog.w(
+                    "HiCarService",
+                    "Box boot best-effort (session=$sessionId) lần $attempts → chốt để chống lặp"
+                )
+            } else {
+                HiCarDiagnosticLog.w(
+                    "HiCarService",
+                    "Box boot best-effort (session=$sessionId) lần $attempts → GIỮ alarm retry"
+                )
+            }
+        }
     }
 
     private fun tryTriggerAaIfProjected(source: String) {
@@ -1014,6 +1047,10 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
                 setVolume(1.0f, 1.0f)
 
                 setOnCompletionListener {
+                    // Phát TRỌN VẸN tới cuối file = đã phát thật (audio focus chỉ mang tính
+                    // hợp tác — không có focus vẫn ra tiếng nếu pipeline hoạt động) → chốt
+                    // phiên boot + hủy alarm retry để KHÔNG phát lặp lần hai.
+                    // Trường hợp pipeline hỏng thật sẽ rơi vào onError/stall, không vào đây.
                     if (isBoxBoot) {
                         completeBootSessionIfNeeded("onCompletion")
                     }
@@ -1030,6 +1067,27 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
 
                 setOnErrorListener { _, what, extra ->
                     HiCarDiagnosticLog.e("HiCarAudio", "MediaPlayer error what=$what extra=$extra")
+                    if (isBoxBoot) {
+                        // Boot bị LỖI giữa chừng: marker "đã phát" + alarm retry có thể đã bị
+                        // hủy lúc start() → nếu không mở lại, boot này sẽ im lặng luôn.
+                        // Chỉ mở lại 1 lần/phiên để tránh loop lỗi vô hạn.
+                        val ctx = this@AudioForegroundService
+                        val sessionId = completingBootSessionId.takeIf { it > 0L }
+                            ?: resolveBootSessionId()
+                        if (sessionId > 0L &&
+                            !BootSessionManager.isSessionCompleted(ctx, sessionId) &&
+                            bootErrorRetryScheduledForSession != sessionId
+                        ) {
+                            bootErrorRetryScheduledForSession = sessionId
+                            bootGreetingHandled = false
+                            BootSessionManager.clearPlaybackStarted(ctx, sessionId)
+                            BootReceiver.scheduleBootRetryAlarms(ctx)
+                            HiCarDiagnosticLog.w(
+                                "HiCarService",
+                                "Boot playback error → mở lại alarm retry cho session $sessionId"
+                            )
+                        }
+                    }
                     if (isBoxBoot && bootPlaybackUsesBootFocus) {
                         releaseBootAudioFocus()
                         bootPlaybackUsesBootFocus = false
@@ -1055,7 +1113,8 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
                     if (isBoxBoot) {
                         bootPlaybackStartedAtMs = SystemClock.elapsedRealtime()
                         onBoxBootPlaybackStarted(completingBootSessionId, hadFocus)
-                        scheduleBootCompletionFallback(durationMs)
+                        // Chỉ hẹn "chốt theo thời lượng đã phát" khi phát thật (có focus).
+                        if (hadFocus) scheduleBootCompletionFallback(durationMs)
                         if (hadFocus) {
                             HiCarDiagnosticLog.d(
                                 "HiCarService",

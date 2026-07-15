@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/audio_model.dart';
 import '../services/api_service.dart';
 import '../services/api_client.dart';
+import '../../core/constants.dart';
 import '../../core/logger.dart';
 
 /// SyncService - Performs optimized background synchronization of audio files.
@@ -40,11 +41,23 @@ class SyncService {
       final audioDir = await getAudioDir();
       final prefs = await SharedPreferences.getInstance();
 
-      // Load last known state to compare hashes
+      // Load last known state to compare hashes (gộp cả cache sync + danh sách chính
+      // để không mất metadata file cũ khi server chỉ trả về nhạc mới).
       final cachedJson = prefs.getString('cached_audio_list');
-      List<AudioModel> localPool = [];
+      final mainJson = prefs.getString(AppConstants.keyAudioList);
+      final List<AudioModel> localPool = [];
+      void addToPool(List<AudioModel> items) {
+        for (final item in items) {
+          if (!localPool.any((e) => e.id == item.id)) {
+            localPool.add(item);
+          }
+        }
+      }
       if (cachedJson != null) {
-        localPool = AudioModel.fromJsonList(cachedJson);
+        addToPool(AudioModel.fromJsonList(cachedJson));
+      }
+      if (mainJson != null) {
+        addToPool(AudioModel.fromJsonList(mainJson));
       }
 
       final List<AudioModel> syncedList = [];
@@ -95,6 +108,21 @@ class SyncService {
           localPath: localPath,
           isDownloaded: localPath != null,
           downloadedAt: localPath != null ? DateTime.now() : null,
+        ));
+      }
+
+      // Giữ file nhạc cũ: server chỉ trả về bản mới thì các mục local-only (đã tải
+      // trước đó / Studio / không còn trên API) vẫn được giữ nếu file còn trên disk.
+      final serverIds = syncedList.map((a) => a.id).toSet();
+      for (final local in localPool) {
+        if (serverIds.contains(local.id)) continue;
+
+        final path = await _resolveExistingLocalPath(local, audioDir);
+        if (path == null) continue;
+
+        syncedList.add(local.copyWith(
+          localPath: path,
+          isDownloaded: true,
         ));
       }
 
@@ -178,6 +206,23 @@ class SyncService {
       return '$dirPath/${audioId}_$hash.mp3';
     }
     return '$dirPath/$audioId.mp3';
+  }
+
+  /// Tìm đường dẫn file local còn tồn tại trên disk (dùng khi giữ nhạc cũ sau sync).
+  Future<String?> _resolveExistingLocalPath(
+    AudioModel audio,
+    Directory audioDir,
+  ) async {
+    final candidates = <String>{
+      if (audio.localPath != null && audio.localPath!.isNotEmpty)
+        audio.localPath!,
+      _localPathFor(audio.id, audio.hash, audioDir.path),
+      '${audioDir.path}/${audio.id}.mp3',
+    };
+    for (final candidate in candidates) {
+      if (await File(candidate).exists()) return candidate;
+    }
+    return null;
   }
 
   /// Deletes a local audio file.

@@ -147,7 +147,7 @@ class ApiService {
     required String carBrand,
     required String type,
   }) async {
-    final response = await _client.post('/api/audio/generate', data: {
+    final response = await _client.post('/audio/generate', data: {
       'owner_name': ownerName,
       'license_plate': licensePlate,
       'car_brand': carBrand,

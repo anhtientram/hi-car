@@ -14,6 +14,7 @@ import 'core/app_router.dart';
 import 'core/constants.dart';
 import 'core/utils/ui_utils.dart';
 import 'native/service_channel.dart';
+import 'data/services/remote_config_service.dart';
 import 'providers/auth_provider.dart';
 import 'providers/audio_provider.dart';
 import 'providers/bluetooth_provider.dart';
@@ -24,6 +25,9 @@ import 'providers/studio_provider.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Lấy Base URL động từ remote config TRƯỚC khi dựng app để mọi request dùng
+  // đúng domain (domain cũ đã ngừng hoạt động).
+  await RemoteConfigService.instance.load();
   _setupEasyLoading();
   runApp(const MyApp());
 }

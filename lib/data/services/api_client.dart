@@ -9,13 +9,31 @@ import '../repositories/auth_repository.dart';
 
 /// Performance-optimized API Client with memory caching and Bearer Auth.
 class ApiClient {
-  static const String baseUrl = 'https://admintts.kingcong.shop';
+  /// Base URL mặc định (fallback) khi chưa lấy được cấu hình từ xa.
+  /// api_url đã bao gồm hậu tố `/api` nên các endpoint KHÔNG lặp lại tiền tố này.
+  static const String fallbackBaseUrl =
+      'https://admintts.chaoxechuanthuonggia.com/api';
+
+  /// Base URL đang dùng (có thể được RemoteConfigService cập nhật lúc mở app).
+  static String baseUrl = fallbackBaseUrl;
+
+  /// Cập nhật baseUrl động (gọi từ RemoteConfigService). An toàn khi gọi trước
+  /// hoặc sau khi [instance] được khởi tạo.
+  static void applyBaseUrl(String url) {
+    baseUrl = url;
+    if (_maybeInstance != null) {
+      _maybeInstance!._dio.options.baseUrl = url;
+    }
+  }
+
+  static ApiClient? _maybeInstance;
 
   late final Dio _dio;
   final Map<String, dynamic> _memoryCache = {};
 
   // Singleton
   ApiClient._() {
+    _maybeInstance = this;
     _dio = Dio(BaseOptions(
       baseUrl: baseUrl,
       connectTimeout: const Duration(seconds: 15),

@@ -113,7 +113,8 @@ object HiCarDiagnosticLog {
         if (!line.contains(" W HiCarService")) return false
         return line.contains("Boot watch: timeout") ||
             line.contains("phát best-effort (alarm retry") ||
-            line.contains("Box boot greeting phát best-effort")
+            line.contains("Box boot greeting phát best-effort") ||
+            line.contains("Box boot best-effort (session=")
     }
 
     fun clear() {

@@ -28,7 +28,6 @@ def keystorePropertiesFile = rootProject.file('key.properties')
 if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
 }
-
 android {
     namespace "com.hicar.ora.limited"
     compileSdk flutter.compileSdkVersion
@@ -77,8 +76,8 @@ android {
             signingConfig signingConfigs.release
             // 🟢 Bật R8 để rút gọn code + tài nguyên, giảm dung lượng app.
             //    Các lớp native/plugin/entry-point đã được giữ trong proguard-rules.pro.
-            minifyEnabled false
-            shrinkResources false
+            minifyEnabled true
+            shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }

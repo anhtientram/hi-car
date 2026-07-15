@@ -262,6 +262,66 @@ class StudioProvider extends ChangeNotifier {
     }
   }
 
+  // ── Gửi lên hệ thống (Order → Recreate) ─────────────────────────────────────
+
+  /// Gửi lời chào vừa nghe thử lên hệ thống.
+  ///
+  /// Luồng: tạo đơn (POST /orders) để lấy `order_id` trong response, rồi gọi ngay
+  /// recreate (POST /orders/{order_id}/recreate) với cùng cấu hình. Không hiển thị
+  /// thanh toán/giá — chỉ báo thành công/thất bại.
+  ///
+  /// Trả về `null` nếu thành công, hoặc chuỗi lỗi nếu thất bại.
+  Future<String?> submitToSystem({
+    required String customerName,
+    required String plateNumber,
+    required String vehicleModel,
+  }) async {
+    if (_previewResponse == null) {
+      return 'Vui lòng nhấn Nghe thử trước khi gửi';
+    }
+
+    _status = StudioStatus.loadingOrder;
+    _errorMessage = null;
+    notifyListeners();
+
+    try {
+      final params = {
+        'customer_name': customerName,
+        'plate_number': plateNumber,
+        'vehicle_model': vehicleModel,
+        'voice_template_id': _selectedTemplate!.id,
+        'voice_sample_id': _selectedVoice!.id,
+        'background_music_id': _selectedBgMusic?.id,
+        'signal_sound_id': _selectedSignalSound?.id,
+        'bg1_volume': _bgMusicVolume,
+        'voice_speed': _voiceSpeed,
+        'voice_delay': _voiceDelay,
+        'draft_audio_url': _previewResponse!.previewUrl,
+      };
+
+      // 1. Tạo đơn để lấy order_id từ response.
+      final orderRaw = await ApiService.instance.createOrder(params);
+      final order = StudioOrderResponse.fromJson(orderRaw);
+      _orderResponse = order;
+
+      // 2. Gửi lên hệ thống qua recreate với order_id vừa nhận (không quan tâm
+      //    nội dung response/giá tiền trả về).
+      if (order.orderId > 0) {
+        await ApiService.instance
+            .recreateOrder(order.orderId.toString(), params);
+      }
+
+      _status = StudioStatus.success;
+      notifyListeners();
+      return null;
+    } catch (e) {
+      _status = StudioStatus.error;
+      _errorMessage = ApiClient.formatError(e);
+      notifyListeners();
+      return _errorMessage;
+    }
+  }
+
   // ── Selection Setters ──────────────────────────────────────────────────────
 
   void selectTemplate(VoiceTemplate t) {

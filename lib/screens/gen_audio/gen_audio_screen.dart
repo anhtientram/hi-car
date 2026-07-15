@@ -79,6 +79,25 @@ class _GenAudioScreenState extends State<GenAudioScreen> {
     }
   }
 
+  Future<void> _submitToSystem() async {
+    final studio = context.read<StudioProvider>();
+    if (!studio.canOrder) {
+      UiUtils.showError(context, 'Vui lòng nhấn Nghe thử trước khi gửi');
+      return;
+    }
+    final err = await studio.submitToSystem(
+      customerName: _nameController.text.trim(),
+      plateNumber: _licensePlateController.text.trim(),
+      vehicleModel: _carBrandController.text.trim(),
+    );
+    if (!mounted) return;
+    if (err == null) {
+      UiUtils.showSuccess(context, 'Đã gửi lời chào lên hệ thống!');
+    } else {
+      UiUtils.showError(context, 'Lỗi gửi hệ thống: $err');
+    }
+  }
+
   // ⚠️ TUÂN THỦ CHÍNH SÁCH STORE (Apple 3.1.1 / Google Play Payments):
   //    Không được bán nội dung số (file lời chào) bằng cổng thanh toán ngoài
   //    (VietQR/chuyển khoản) ngay trong app. Việc mua bán được xử lý bên ngoài
@@ -826,6 +845,46 @@ class _GenAudioScreenState extends State<GenAudioScreen> {
                 ),
               ),
             ],
+          ),
+        ],
+
+        // Gửi lời chào lên hệ thống (tạo đơn → recreate). Fire-and-forget, không hiện giá.
+        if (studio.canOrder) ...[
+          SizedBox(height: 12.h),
+          _ScaleButton(
+            onTap: studio.isLoadingOrder ? null : _submitToSystem,
+            child: Container(
+              width: double.infinity,
+              height: 56.h,
+              decoration: BoxDecoration(
+                color: AppColors.success.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(16.r),
+                border: Border.all(color: AppColors.success, width: 1.5),
+              ),
+              child: Center(
+                child: studio.isLoadingOrder
+                    ? const SizedBox(
+                        width: 22,
+                        height: 22,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2.5, color: AppColors.success),
+                      )
+                    : Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.cloud_upload_rounded,
+                              color: AppColors.success),
+                          SizedBox(width: 10.w),
+                          Text('GỬI LÊN HỆ THỐNG',
+                              style: TextStyle(
+                                  color: AppColors.success,
+                                  fontSize: 14.sp,
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 0.8)),
+                        ],
+                      ),
+              ),
+            ),
           ),
         ],
 

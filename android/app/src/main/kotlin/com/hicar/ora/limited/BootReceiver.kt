@@ -31,11 +31,14 @@ class BootReceiver : BroadcastReceiver() {
                     putExtra(AudioForegroundService.EXTRA_PREFER_BOOT_AUDIO, true)
                     putExtra(AudioForegroundService.EXTRA_BOOT_SESSION_ID, sessionId)
                 }
+                // FLAG_UPDATE_CURRENT: nếu còn PendingIntent cũ (session trước) thì cập nhật
+                // extras (session id mới) thay vì dùng lại extras cũ đã stale.
                 val pending = PendingIntent.getService(
                     context,
                     BootSessionManager.BOOT_RETRY_ALARM_REQUEST_BASE + index,
                     intent,
-                    PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+                    PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_UPDATE_CURRENT or
+                        PendingIntent.FLAG_IMMUTABLE
                 )
                 alarmManager.set(
                     AlarmManager.ELAPSED_REALTIME_WAKEUP,
