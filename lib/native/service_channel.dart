@@ -200,6 +200,30 @@ class ServiceChannel {
     }
   }
 
+  /// iOS: đã có đường ra âm thanh của xe (CarPlay hoặc Bluetooth A2DP) chưa.
+  /// Android trả về false vì trạng thái kết nối đã do BluetoothChannel lo.
+  Future<bool> isVehicleConnected() async {
+    try {
+      final result = await _channel.invokeMethod<bool>('isVehicleConnected');
+      return result ?? false;
+    } catch (e) {
+      debugPrint('ServiceChannel: isVehicleConnected error: $e');
+      return false;
+    }
+  }
+
+  /// iOS: mô tả đường ra âm thanh hiện tại, vd `CarAudio:Toyota` hoặc `Speaker:Speaker`.
+  /// Dùng để người dùng tự kiểm tra "máy đã nối xe chưa" khi lời chào không phát.
+  Future<String> getAudioRoute() async {
+    try {
+      final result = await _channel.invokeMethod<String>('getAudioRoute');
+      return result ?? '';
+    } catch (e) {
+      debugPrint('ServiceChannel: getAudioRoute error: $e');
+      return '';
+    }
+  }
+
   Future<void> syncPrefs() async {
     try {
       await _channel.invokeMethod('syncPrefs');

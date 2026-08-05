@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -5,6 +6,7 @@ import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:provider/provider.dart';
 import 'package:go_router/go_router.dart';
 import '../../core/app_colors.dart';
+import '../../native/service_channel.dart';
 import '../../providers/permission_provider.dart';
 import '../../providers/settings_provider.dart';
 import '../../widgets/premium_loading.dart';
@@ -397,7 +399,9 @@ class _PermissionConfigScreenState extends State<PermissionConfigScreen>
                   style:
                       TextStyle(color: AppColors.textSecondary, fontSize: 14.sp),
                 ),
-                SizedBox(height: 20.h),
+                SizedBox(height: 16.h),
+                const _VehicleRouteStatusCard(),
+                SizedBox(height: 4.h),
                 bullet(
                   Icons.audiotrack_rounded,
                   'Phát nền tự động',
@@ -405,8 +409,8 @@ class _PermissionConfigScreenState extends State<PermissionConfigScreen>
                 ),
                 bullet(
                   Icons.bolt_rounded,
-                  'Thiết lập Phím tắt (quan trọng)',
-                  'Mở app "Phím tắt" → Tự động hoá → "Khi CarPlay kết nối" → thêm tác vụ "Phát lời chào HiCar", rồi tắt "Hỏi trước khi chạy".',
+                  'Thiết lập Phím tắt (nên làm)',
+                  'App tự nhận biết khi cắm CarPlay, nhưng nếu iOS đã tắt hẳn app thì cần Phím tắt đánh thức: mở app "Phím tắt" → Tự động hoá → "Khi CarPlay kết nối" → thêm tác vụ "Phát lời chào HiCar", rồi tắt "Hỏi trước khi chạy".',
                 ),
                 bullet(
                   Icons.mic_rounded,
@@ -633,6 +637,118 @@ class _PermissionConfigScreenState extends State<PermissionConfigScreen>
                   ),
                 ),
         ),
+      ),
+    );
+  }
+}
+
+/// Hiện đường ra âm thanh hiện tại của iPhone. Khi lời chào không phát, đây là chỗ để
+/// người dùng biết máy đã thực sự nối vào xe chưa hay tiếng vẫn đang ra loa điện thoại.
+class _VehicleRouteStatusCard extends StatefulWidget {
+  const _VehicleRouteStatusCard();
+
+  @override
+  State<_VehicleRouteStatusCard> createState() =>
+      _VehicleRouteStatusCardState();
+}
+
+class _VehicleRouteStatusCardState extends State<_VehicleRouteStatusCard> {
+  Timer? _timer;
+  bool _connected = false;
+  String _route = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+    _timer = Timer.periodic(const Duration(seconds: 2), (_) => _refresh());
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _refresh() async {
+    final connected = await ServiceChannel.instance.isVehicleConnected();
+    final route = await ServiceChannel.instance.getAudioRoute();
+    if (!mounted) return;
+    if (connected == _connected && route == _route) return;
+    setState(() {
+      _connected = connected;
+      _route = route;
+    });
+  }
+
+  /// `CarAudio:Toyota Camry` → `Toyota Camry (CarPlay)`.
+  String get _label {
+    if (_route.isEmpty || _route == 'none') return 'Chưa xác định';
+    final first = _route.split(',').first;
+    final parts = first.split(':');
+    if (parts.length < 2) return first;
+    final name = parts[1];
+    final kind = switch (parts[0]) {
+      'CarAudio' => 'CarPlay',
+      'BluetoothA2DPOutput' => 'Bluetooth',
+      'BluetoothLE' => 'Bluetooth LE',
+      'BluetoothHFP' => 'Bluetooth rảnh tay',
+      _ => 'Loa điện thoại',
+    };
+    return '$name ($kind)';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final color = _connected ? AppColors.primary : AppColors.textHint;
+
+    return Container(
+      margin: EdgeInsets.only(bottom: 12.h),
+      padding: EdgeInsets.all(14.w),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(12.r),
+        border: Border.all(color: _connected ? color : AppColors.border),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: EdgeInsets.all(8.w),
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+            child: Icon(
+              _connected
+                  ? Icons.directions_car_filled_rounded
+                  : Icons.phone_iphone_rounded,
+              color: Colors.white,
+              size: 18.sp,
+            ),
+          ),
+          SizedBox(width: 12.w),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  _connected ? 'Đã nối loa xe' : 'Chưa nối loa xe',
+                  style: TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 14.sp,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                SizedBox(height: 4.h),
+                Text(
+                  'Đang phát ra: $_label',
+                  style: TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 12.sp,
+                    height: 1.35,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

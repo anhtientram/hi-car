@@ -446,11 +446,7 @@ class AudioProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final mode = prefs.getString('connection_mode');
-      if (mode != 'android_box_mode') {
-        await Future.delayed(const Duration(milliseconds: 1500));
-      }
+      await _waitForAudioFocus();
 
       // User đã bấm phát cái khác trong lúc chờ → bỏ.
       if (token != _nativePlaybackToken) return false;
@@ -518,11 +514,7 @@ class AudioProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final mode = prefs.getString('connection_mode');
-      if (mode != 'android_box_mode') {
-        await Future.delayed(const Duration(milliseconds: 1500));
-      }
+      await _waitForAudioFocus();
 
       if (token != _nativePlaybackToken) return false;
 
@@ -552,6 +544,18 @@ class AudioProvider extends ChangeNotifier {
         _isStartingPlayback = false;
       }
     }
+  }
+
+  /// Nhịp chờ trước khi ra lệnh phát cho native.
+  ///
+  /// Android cần ~1.5s để audio focus của màn hình xe ổn định (Box khởi động thì native tự
+  /// lo nên bỏ qua). iOS KHÔNG cần: `HiCarAudioPlayer` đã tự chờ đúng lúc route xe sẵn sàng
+  /// rồi mới phát, thêm 1.5s ở đây chỉ làm bấm nút xong phải đợi cả giây mới nghe thấy.
+  Future<void> _waitForAudioFocus() async {
+    if (Platform.isIOS) return;
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getString('connection_mode') == 'android_box_mode') return;
+    await Future.delayed(const Duration(milliseconds: 1500));
   }
 
   Future<void> _cancelLocalPreview() async {
