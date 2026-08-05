@@ -154,7 +154,17 @@ final class HiCarAudioPlayer: NSObject, AVAudioPlayerDelegate {
     }
 
     let session = AVAudioSession.sharedInstance()
-    configureSession()
+    // Cho phép route ra Bluetooth / CarPlay khi Intent chạy nền.
+    do {
+      try session.setCategory(
+        .playback,
+        mode: .default,
+        options: [.duckOthers, .allowBluetoothA2DP]
+      )
+    } catch {
+      NSLog("HiCar: setCategory error \(error.localizedDescription)")
+      configureSession()
+    }
     do {
       try session.setActive(true, options: [])
     } catch {
@@ -171,12 +181,28 @@ final class HiCarAudioPlayer: NSObject, AVAudioPlayerDelegate {
       player = newPlayer
       if started {
         notifyFlutter("onPlaybackStarted", arguments: type)
+      } else {
+        NSLog("HiCar: AVAudioPlayer.play() trả về false (route/focus chưa sẵn?)")
       }
       return started
     } catch {
       NSLog("HiCar: AVAudioPlayer lỗi \(error.localizedDescription)")
       return false
     }
+  }
+
+  /// Phát kèm retry — dùng cho Shortcut lúc vừa connect BT/CarPlay (route chưa ổn định).
+  func playWithRetry(type: String, attempts: Int = 3, delayMs: UInt64 = 1500) async -> Bool {
+    for attempt in 1...attempts {
+      if attempt > 1 {
+        try? await Task.sleep(nanoseconds: delayMs * 1_000_000)
+      }
+      configureSession()
+      let ok = play(type: type)
+      NSLog("HiCar: playWithRetry type=\(type) attempt=\(attempt)/\(attempts) ok=\(ok)")
+      if ok { return true }
+    }
+    return false
   }
 
   func stop() {
@@ -245,12 +271,15 @@ struct PlayGreetingIntent: AppIntent {
   static var openAppWhenRun: Bool = false
 
   func perform() async throws -> some IntentResult & ProvidesDialog {
-    HiCarAudioPlayer.shared.configureSession()
+    // Chờ route Bluetooth/CarPlay ổn định rồi mới phát (retry nếu lần đầu fail).
+    try? await Task.sleep(nanoseconds: 1_200_000_000)
     if HiCarAudioPlayer.shared.resolvePath(for: "greeting") == nil {
-      return .result(dialog: "Chưa cấu hình lời chào trong ứng dụng HiCar.")
+      return .result(dialog: "Chưa cấu hình lời chào trong ứng dụng HiCar. Hãy mở app và đặt lời chào.")
     }
-    let ok = HiCarAudioPlayer.shared.play(type: "greeting")
-    let message = ok ? "Đang phát lời chào." : "Không phát được lời chào. Thử mở lại ứng dụng HiCar rồi kết nối CarPlay."
+    let ok = await HiCarAudioPlayer.shared.playWithRetry(type: "greeting")
+    let message = ok
+      ? "Đang phát lời chào."
+      : "Không phát được lời chào. Hãy mở app HiCar một lần, kiểm tra lời chào đã đặt, rồi kết nối Bluetooth/CarPlay lại."
     return .result(dialog: "\(message)")
   }
 }
@@ -263,12 +292,14 @@ struct PlayGoodbyeIntent: AppIntent {
   static var openAppWhenRun: Bool = false
 
   func perform() async throws -> some IntentResult & ProvidesDialog {
-    HiCarAudioPlayer.shared.configureSession()
+    try? await Task.sleep(nanoseconds: 1_200_000_000)
     if HiCarAudioPlayer.shared.resolvePath(for: "goodbye") == nil {
-      return .result(dialog: "Chưa cấu hình lời tạm biệt trong ứng dụng HiCar.")
+      return .result(dialog: "Chưa cấu hình lời tạm biệt trong ứng dụng HiCar. Hãy mở app và đặt lời tạm biệt.")
     }
-    let ok = HiCarAudioPlayer.shared.play(type: "goodbye")
-    let message = ok ? "Đang phát lời tạm biệt." : "Không phát được lời tạm biệt. Thử mở lại ứng dụng HiCar rồi kết nối CarPlay."
+    let ok = await HiCarAudioPlayer.shared.playWithRetry(type: "goodbye")
+    let message = ok
+      ? "Đang phát lời tạm biệt."
+      : "Không phát được lời tạm biệt. Hãy mở app HiCar một lần rồi kết nối Bluetooth/CarPlay lại."
     return .result(dialog: "\(message)")
   }
 }
