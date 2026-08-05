@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../../../core/app_colors.dart';
 import '../../../providers/audio_provider.dart';
+import '../../../widgets/premium_loading.dart';
 
 class PlaybackControllerWidget extends StatelessWidget {
   const PlaybackControllerWidget({super.key});
@@ -28,26 +29,37 @@ class PlaybackControllerWidget extends StatelessWidget {
                 children: [
                   Expanded(
                     child: _ControllerButton(
-                      label: 'Phát lời chào',
+                      label: audioProvider.isPreparingGreeting
+                          ? 'Đang chuẩn bị...'
+                          : audioProvider.isNativeGreetingPlaying
+                              ? 'Đang phát lời chào'
+                              : 'Phát lời chào',
                       subLabel: hasGreeting
                           ? audioProvider.activeGreeting!.title
                           : 'Chưa cài đặt',
                       icon: Icons.waving_hand_rounded,
                       color: AppColors.primary,
-                      isEnabled: hasGreeting,
+                      isEnabled: hasGreeting &&
+                          !audioProvider.isPreparingNativePlayback,
                       isPlaying: audioProvider.isNativeGreetingPlaying,
+                      isPreparing: audioProvider.isPreparingGreeting,
                       onTap: () => audioProvider.playGreetingViaNative(),
                     ),
                   ),
                   SizedBox(width: 8.w),
                   Expanded(
                     child: _ControllerButton(
-                      label: 'Phát tạm biệt',
+                      label: audioProvider.isPreparingGoodbye
+                          ? 'Đang chuẩn bị...'
+                          : audioProvider.isNativeGoodbyePlaying
+                              ? 'Đang phát tạm biệt'
+                              : 'Phát tạm biệt',
                       subLabel: audioProvider.activeGoodbye.title,
                       icon: Icons.directions_car_rounded,
                       color: AppColors.success,
-                      isEnabled: true,
+                      isEnabled: !audioProvider.isPreparingNativePlayback,
                       isPlaying: audioProvider.isNativeGoodbyePlaying,
+                      isPreparing: audioProvider.isPreparingGoodbye,
                       onTap: () => audioProvider.playGoodbyeViaNative(),
                     ),
                   ),
@@ -115,6 +127,7 @@ class _ControllerButton extends StatelessWidget {
   final Color color;
   final bool isEnabled;
   final bool isPlaying;
+  final bool isPreparing;
   final VoidCallback onTap;
 
   const _ControllerButton({
@@ -124,37 +137,45 @@ class _ControllerButton extends StatelessWidget {
     required this.color,
     required this.isEnabled,
     this.isPlaying = false,
+    this.isPreparing = false,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
+    final active = isPlaying || isPreparing;
+
     return _ScaleButton(
       onTap: isEnabled ? onTap : null,
       child: Opacity(
-        opacity: isEnabled ? 1.0 : 0.4,
+        opacity: isEnabled || isPreparing ? 1.0 : 0.4,
         child: ClipRRect(
           borderRadius: BorderRadius.circular(12.r),
           child: Material(
-            color: AppColors.cardElevated,
+            color: isPreparing
+                ? color.withOpacity(0.08)
+                : isPlaying
+                    ? color.withOpacity(0.12)
+                    : AppColors.cardElevated,
             child: InkWell(
               onTap: isEnabled ? onTap : null,
               splashColor: color.withOpacity(0.3),
               highlightColor: color.withOpacity(0.1),
-              child: Container(
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 220),
                 padding: EdgeInsets.all(8.w),
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(12.r),
                   border: Border.all(
-                    color: isPlaying ? color : AppColors.border,
-                    width: isPlaying ? 2 : 1,
+                    color: active ? color : AppColors.border,
+                    width: active ? 2 : 1,
                   ),
-                  boxShadow: isPlaying
+                  boxShadow: active
                       ? [
                           BoxShadow(
-                            color: color.withOpacity(0.3),
+                            color: color.withOpacity(0.28),
                             blurRadius: 8,
-                            spreadRadius: 2,
+                            spreadRadius: 1,
                           )
                         ]
                       : null,
@@ -173,7 +194,9 @@ class _ControllerButton extends StatelessWidget {
                           ),
                           child: Icon(icon, color: Colors.white, size: 20.sp),
                         ),
-                        if (isPlaying)
+                        if (isPreparing)
+                          PremiumLoading(size: 18.sp, color: color, strokeWidth: 2)
+                        else if (isPlaying)
                           _PulseIcon(
                             key: const ValueKey('playing_icon'),
                             color: color,
@@ -192,15 +215,15 @@ class _ControllerButton extends StatelessWidget {
                       label,
                       style: TextStyle(
                         color: AppColors.textPrimary,
-                        fontSize: 13.sp,
+                        fontSize: 12.sp,
                         fontWeight: FontWeight.w700,
                       ),
                     ),
                     SizedBox(height: 2.h),
                     Text(
-                      subLabel,
+                      isPreparing ? 'Chờ service phản hồi...' : subLabel,
                       style: TextStyle(
-                        color: AppColors.textHint,
+                        color: isPreparing ? color : AppColors.textHint,
                         fontSize: 10.sp,
                       ),
                       maxLines: 1,

@@ -1,7 +1,6 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/audio_model.dart';
 import '../services/api_service.dart';
@@ -131,6 +130,9 @@ class AudioRepository {
 
   // ===== Get Active Paths =====
 
+  static const String activeGreetingFileName = 'active_greeting.mp3';
+  static const String activeGoodbyeFileName = 'active_goodbye.mp3';
+
   Future<String?> getGreetingAudioPath(AudioModel? audio) async {
     if (audio == null) return null;
     if (audio.assetPath != null && audio.assetPath!.isNotEmpty) {
@@ -151,19 +153,42 @@ class AudioRepository {
     return exists ? audio.localPath : null;
   }
 
+  /// Sao chép file lời chào/tạm biệt sang tên cố định trong Documents.
+  /// CarPlay/App Intent đọc path này ngay cả khi app không mở.
+  Future<String?> pinActiveAudio({
+    required String? sourcePath,
+    required String destFileName,
+  }) async {
+    if (sourcePath == null || sourcePath.isEmpty) return null;
+    final source = File(sourcePath);
+    if (!await source.exists()) return null;
+
+    final audioDir = await SyncService.instance.getAudioDir();
+    final dest = File('${audioDir.path}/$destFileName');
+    if (source.path == dest.path) return dest.path;
+
+    await source.copy(dest.path);
+    return dest.path;
+  }
+
+  /// Copy asset vào Documents (không dùng temp — iOS có thể xóa temp bất kỳ lúc nào).
   Future<String> _prepareAssetFile(String assetPath) async {
     try {
-      final tempDir = await getTemporaryDirectory();
+      final audioDir = await SyncService.instance.getAudioDir();
       final fileName = assetPath.split('/').last;
-      final tempFile = File('${tempDir.path}/$fileName');
+      final destFile = File('${audioDir.path}/$fileName');
 
-      if (await tempFile.exists()) return tempFile.path;
+      if (await destFile.exists() && await destFile.length() > 0) {
+        return destFile.path;
+      }
 
       final byteData = await rootBundle.load(assetPath);
       final buffer = byteData.buffer;
-      await tempFile.writeAsBytes(
-          buffer.asUint8List(byteData.offsetInBytes, byteData.lengthInBytes));
-      return tempFile.path;
+      await destFile.writeAsBytes(
+        buffer.asUint8List(byteData.offsetInBytes, byteData.lengthInBytes),
+        flush: true,
+      );
+      return destFile.path;
     } catch (e) {
       debugPrint('Error preparing asset file: $e');
       return '';

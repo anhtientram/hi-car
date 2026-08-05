@@ -6,6 +6,7 @@ import 'package:flutter_easyloading/flutter_easyloading.dart';
 import 'package:provider/provider.dart';
 import 'package:go_router/go_router.dart';
 import '../../core/app_colors.dart';
+import '../../core/constants.dart';
 import '../../core/utils/ui_utils.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/audio_provider.dart';
@@ -272,11 +273,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 shape: BoxShape.circle,
               ),
               child: Icon(
-                settings.connectionMode == 'phone_bluetooth'
-                    ? Icons.bluetooth_rounded
-                    : (settings.connectionMode == 'phone_android_auto'
-                        ? Icons.directions_car_filled_rounded
-                        : Icons.developer_board_rounded),
+                _connectionModeIcon(settings.connectionMode),
                 color: Colors.white,
                 size: 18.sp,
               ),
@@ -291,13 +288,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     style: TextStyle(color: AppColors.textHint, fontSize: 9.sp),
                   ),
                   Text(
-                    settings.connectionMode == 'phone_bluetooth'
-                        ? 'Điện thoại + Bluetooth'
-                        : (settings.connectionMode == 'android_screen_mode'
-                            ? 'Màn hình Android'
-                            : (settings.connectionMode == 'android_box_mode'
-                                ? 'Android Box'
-                                : 'Android Auto')),
+                    _connectionModeLabel(settings.connectionMode),
                     style: TextStyle(
                       color: AppColors.textPrimary,
                       fontSize: 13.sp,
@@ -323,6 +314,40 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
       ),
     );
+  }
+
+  IconData _connectionModeIcon(String mode) {
+    switch (mode) {
+      case 'phone_bluetooth':
+        return Icons.bluetooth_rounded;
+      case 'phone_android_auto':
+        return Icons.directions_car_filled_rounded;
+      case AppConstants.iosCarplayMode:
+        return Icons.phone_iphone_rounded;
+      case 'android_box_mode':
+        return Icons.developer_board_rounded;
+      case 'android_screen_mode':
+        return Icons.tablet_android_rounded;
+      default:
+        return Icons.directions_car_rounded;
+    }
+  }
+
+  String _connectionModeLabel(String mode) {
+    switch (mode) {
+      case 'phone_bluetooth':
+        return 'Điện thoại + Bluetooth';
+      case 'phone_android_auto':
+        return 'Android Auto';
+      case AppConstants.iosCarplayMode:
+        return 'iPhone + CarPlay';
+      case 'android_box_mode':
+        return 'Android Box';
+      case 'android_screen_mode':
+        return 'Màn hình Android';
+      default:
+        return mode;
+    }
   }
 
   Future<void> _showBugReportDialog(BuildContext context) async {

@@ -5,6 +5,7 @@ import '../../../core/app_colors.dart';
 import '../../../providers/bluetooth_provider.dart';
 import '../../../data/models/bluetooth_device_model.dart';
 import '../../../core/constants.dart';
+import '../../../widgets/premium_loading.dart';
 
 class BluetoothPanelWidget extends StatefulWidget {
   const BluetoothPanelWidget({super.key});
@@ -231,15 +232,7 @@ class _BluetoothExpandedContentState extends State<_BluetoothExpandedContent> {
                 child: Padding(
                   padding: EdgeInsets.all(4.w),
                   child: provider.isLoading
-                      ? SizedBox(
-                          width: 14.w,
-                          height: 14.w,
-                          child: const CircularProgressIndicator(
-                            strokeWidth: 2,
-                            valueColor:
-                                AlwaysStoppedAnimation(AppColors.primary),
-                          ),
-                        )
+                      ? PremiumLoading(size: 14.w, strokeWidth: 2)
                       : Icon(
                           Icons.refresh_rounded,
                           color: AppColors.primary,
@@ -307,15 +300,7 @@ class _BluetoothExpandedContentState extends State<_BluetoothExpandedContent> {
                 child: Padding(
                   padding: EdgeInsets.all(4.w),
                   child: provider.isScanning
-                      ? SizedBox(
-                          width: 14.w,
-                          height: 14.w,
-                          child: const CircularProgressIndicator(
-                            strokeWidth: 2,
-                            valueColor:
-                                AlwaysStoppedAnimation(AppColors.primary),
-                          ),
-                        )
+                      ? PremiumLoading(size: 14.w, strokeWidth: 2)
                       : Text(
                           'Tìm kiếm',
                           style: TextStyle(
@@ -395,14 +380,7 @@ class _DeviceItem extends StatelessWidget {
     if (isConnecting) {
       statusText = device.isConnected ? 'Đang ngắt...' : 'Đang kết nối...';
       statusColor = AppColors.primary;
-      trailingWidget = SizedBox(
-        width: 14.w,
-        height: 14.w,
-        child: const CircularProgressIndicator(
-          strokeWidth: 2,
-          valueColor: AlwaysStoppedAnimation(AppColors.primary),
-        ),
-      );
+      trailingWidget = PremiumLoading(size: 14.w, strokeWidth: 2);
     } else if (device.isConnected) {
       statusText = 'Đã kết nối';
       statusColor = AppColors.success;

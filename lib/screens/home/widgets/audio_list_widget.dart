@@ -106,37 +106,46 @@ class _AudioCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final audioProvider = context.read<AudioProvider>();
-    final isPlaying = audioProvider.currentlyPlaying?.id == audio.id &&
-        audioProvider.isPlaying;
+    return Consumer<AudioProvider>(
+      builder: (context, audioProvider, _) {
+        final isPlaying = audioProvider.currentlyPlaying?.id == audio.id &&
+            audioProvider.isPlaying;
+        final isPreparing = audioProvider.isPreparingAudio(audio.id);
+        final isActive = isPlaying || isPreparing;
 
-    final typeColor = audio.type == AudioType.greeting
-        ? AppColors.primary
-        : audio.type == AudioType.goodbye
-            ? AppColors.success
-            : AppColors.warning;
+        final typeColor = audio.type == AudioType.greeting
+            ? AppColors.primary
+            : audio.type == AudioType.goodbye
+                ? AppColors.success
+                : AppColors.warning;
 
-    return Container(
-      padding: EdgeInsets.symmetric(horizontal: 10.w, vertical: 8.h),
-      decoration: BoxDecoration(
-        color: AppColors.card,
-        borderRadius: BorderRadius.circular(14.r),
-        border: Border.all(
-          color: isPlaying ? AppColors.primary : AppColors.border,
-          width: isPlaying ? 1.5 : 1,
-        ),
-        boxShadow: null,
-      ),
-      child: Row(
-        children: [
-          // Type indicator
-          Material(
-            color: Colors.transparent,
-            child: InkWell(
-              onTap: () => audioProvider.playAudio(audio),
-              borderRadius: BorderRadius.circular(12.r),
-              splashColor: Colors.white.withOpacity(0.3),
-              child: Container(
+        return AnimatedContainer(
+          duration: const Duration(milliseconds: 220),
+          padding: EdgeInsets.symmetric(horizontal: 10.w, vertical: 8.h),
+          decoration: BoxDecoration(
+            color: isPlaying
+                ? AppColors.primary.withOpacity(0.10)
+                : isPreparing
+                    ? AppColors.primary.withOpacity(0.06)
+                    : AppColors.card,
+            borderRadius: BorderRadius.circular(14.r),
+            border: Border.all(
+              color: isActive ? AppColors.primary : AppColors.border,
+              width: isActive ? 1.5 : 1,
+            ),
+            boxShadow: isPlaying
+                ? [
+                    BoxShadow(
+                      color: AppColors.primary.withOpacity(0.18),
+                      blurRadius: 10,
+                      offset: const Offset(0, 2),
+                    )
+                  ]
+                : null,
+          ),
+          child: Row(
+            children: [
+              Container(
                 width: 34.w,
                 height: 34.w,
                 decoration: BoxDecoration(
@@ -153,78 +162,128 @@ class _AudioCard extends StatelessWidget {
                   size: 16.sp,
                 ),
               ),
-            ),
-          ),
-
-          SizedBox(width: 12.w),
-
-          // Info
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  audio.title,
-                  style: TextStyle(
-                    color: AppColors.textPrimary,
-                    fontSize: 12.sp,
-                    fontWeight: FontWeight.w600,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                SizedBox(height: 4.h),
-                Row(
+              SizedBox(width: 12.w),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Container(
-                      padding:
-                          EdgeInsets.symmetric(horizontal: 8.w, vertical: 2.h),
-                      decoration: BoxDecoration(
-                        color: AppColors.brandBackground,
-                        borderRadius: BorderRadius.circular(6.r),
-                      ),
-                      child: Text(
-                        audio.type.label,
-                        style: TextStyle(
-                          color: typeColor,
-                          fontSize: 10.sp,
-                          fontWeight: FontWeight.w600,
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            audio.title,
+                            style: TextStyle(
+                              color: AppColors.textPrimary,
+                              fontSize: 12.sp,
+                              fontWeight: FontWeight.w600,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
-                      ),
+                        if (isPreparing)
+                          Padding(
+                            padding: EdgeInsets.only(left: 6.w),
+                            child: Text(
+                              'Đang tải...',
+                              style: TextStyle(
+                                color: AppColors.primary,
+                                fontSize: 9.sp,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          )
+                        else if (isPlaying)
+                          Padding(
+                            padding: EdgeInsets.only(left: 6.w),
+                            child: _PlayingBadge(),
+                          ),
+                      ],
                     ),
-                    SizedBox(width: 8.w),
-                    if (audio.isActiveGreeting)
-                      _StatusBadge(
-                          label: '✓ Lời chào', color: AppColors.primary),
-                    SizedBox(width: 8.w),
-                    if (audio.isActiveGoodbye)
-                      _StatusBadge(
-                          label: '✓ Tạm biệt', color: AppColors.success),
-                  ],
-                ),
-                if (audio.isDownloaded) ...[
-                  SizedBox(height: 4.h),
-                  Row(
-                    children: [
-                      Icon(Icons.download_done_rounded,
-                          color: AppColors.success, size: 12.sp),
-                      SizedBox(width: 4.w),
-                      Text(
-                        'Đã tải · ${audio.durationSeconds}s',
-                        style: TextStyle(
-                          color: AppColors.textHint,
-                          fontSize: 10.sp,
+                    SizedBox(height: 4.h),
+                    Row(
+                      children: [
+                        Container(
+                          padding: EdgeInsets.symmetric(
+                              horizontal: 8.w, vertical: 2.h),
+                          decoration: BoxDecoration(
+                            color: AppColors.brandBackground,
+                            borderRadius: BorderRadius.circular(6.r),
+                          ),
+                          child: Text(
+                            audio.type.label,
+                            style: TextStyle(
+                              color: typeColor,
+                              fontSize: 10.sp,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
                         ),
+                        SizedBox(width: 8.w),
+                        if (audio.isActiveGreeting)
+                          _StatusBadge(
+                              label: '✓ Lời chào', color: AppColors.primary),
+                        SizedBox(width: 8.w),
+                        if (audio.isActiveGoodbye)
+                          _StatusBadge(
+                              label: '✓ Tạm biệt', color: AppColors.success),
+                      ],
+                    ),
+                    if (audio.isDownloaded) ...[
+                      SizedBox(height: 4.h),
+                      Row(
+                        children: [
+                          Icon(Icons.download_done_rounded,
+                              color: AppColors.success, size: 12.sp),
+                          SizedBox(width: 4.w),
+                          Text(
+                            'Đã tải · ${audio.durationSeconds}s',
+                            style: TextStyle(
+                              color: AppColors.textHint,
+                              fontSize: 10.sp,
+                            ),
+                          ),
+                        ],
                       ),
                     ],
-                  ),
-                ],
-              ],
+                  ],
+                ),
+              ),
+              _AudioActions(
+                audio: audio,
+                isPlaying: isPlaying,
+                isPreparing: isPreparing,
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _PlayingBadge extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: EdgeInsets.symmetric(horizontal: 6.w, vertical: 2.h),
+      decoration: BoxDecoration(
+        color: AppColors.primary,
+        borderRadius: BorderRadius.circular(6.r),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.graphic_eq_rounded, color: Colors.white, size: 10.sp),
+          SizedBox(width: 3.w),
+          Text(
+            'Đang phát',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 9.sp,
+              fontWeight: FontWeight.w700,
             ),
           ),
-
-          // Actions
-          _AudioActions(audio: audio, isPlaying: isPlaying),
         ],
       ),
     );
@@ -261,25 +320,38 @@ class _StatusBadge extends StatelessWidget {
 class _AudioActions extends StatelessWidget {
   final AudioModel audio;
   final bool isPlaying;
+  final bool isPreparing;
 
-  const _AudioActions({required this.audio, required this.isPlaying});
+  const _AudioActions({
+    required this.audio,
+    required this.isPlaying,
+    required this.isPreparing,
+  });
 
   @override
   Widget build(BuildContext context) {
     final provider = context.read<AudioProvider>();
     final isBuiltInGoodbye = audio.id == AppConstants.defaultGoodbyeId;
+    final isActive = isPlaying || isPreparing;
 
     return PopupMenuButton<String>(
       padding: EdgeInsets.zero,
       constraints: BoxConstraints(minWidth: 160.w),
-      icon: Icon(Icons.more_vert_rounded,
-          color: AppColors.textSecondary, size: 20.sp),
+      icon: Icon(
+        isPlaying
+            ? Icons.graphic_eq_rounded
+            : isPreparing
+                ? Icons.hourglass_top_rounded
+                : Icons.more_vert_rounded,
+        color: isActive ? AppColors.primary : AppColors.textSecondary,
+        size: 20.sp,
+      ),
       color: AppColors.cardElevated,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12.r)),
       onSelected: (value) async {
         switch (value) {
           case 'play':
-            if (isPlaying) {
+            if (isPlaying || isPreparing) {
               await provider.stopAudio();
             } else {
               await provider.playAudio(audio);
@@ -310,15 +382,18 @@ class _AudioActions extends StatelessWidget {
         if (audio.hasLocalFile)
           _popupItem(
             value: 'play',
-            icon: isPlaying ? Icons.stop_rounded : Icons.play_arrow_rounded,
-            label: isPlaying ? 'Dừng' : 'Nghe thử',
+            icon: isPlaying || isPreparing
+                ? Icons.stop_rounded
+                : Icons.play_arrow_rounded,
+            label: isPlaying || isPreparing ? 'Dừng' : 'Nghe thử',
           ),
         _popupItem(
           value: audio.isActiveGreeting ? 'unset_greeting' : 'set_greeting',
           icon: audio.isActiveGreeting
               ? Icons.do_not_disturb_on_outlined
               : Icons.waving_hand_rounded,
-          label: audio.isActiveGreeting ? 'Bỏ làm lời chào' : 'Đặt làm lời chào',
+          label:
+              audio.isActiveGreeting ? 'Bỏ làm lời chào' : 'Đặt làm lời chào',
           color: AppColors.primary,
         ),
         if (!isBuiltInGoodbye || !audio.isActiveGoodbye)

@@ -68,12 +68,18 @@ import AppIntents
         }
       case "clearGreetingConfig":
         UserDefaults.standard.removeObject(forKey: "flutter.greeting_audio_path")
+        UserDefaults.standard.synchronize()
         result(true)
       case "clearGoodbyeConfig":
         UserDefaults.standard.removeObject(forKey: "flutter.goodbye_audio_path")
+        UserDefaults.standard.synchronize()
+        result(true)
+      // flush UserDefaults để App Intent/Shortcut đọc được path vừa ghi.
+      case "syncPrefs":
+        UserDefaults.standard.synchronize()
         result(true)
       // Các method chỉ có ý nghĩa trên Android → no-op để không ném MissingPluginException.
-      case "syncPrefs", "minimizeApp", "openApp", "showAutostartSettings":
+      case "minimizeApp", "openApp", "showAutostartSettings":
         result(true)
       default:
         result(FlutterMethodNotImplemented)
@@ -183,16 +189,27 @@ final class HiCarAudioPlayer: NSObject, AVAudioPlayerDelegate {
   /// phòng khi đường dẫn tuyệt đối cũ không còn hợp lệ (container đổi sau khi cập nhật app).
   func resolvePath(for type: String) -> String? {
     let key = (type == "greeting") ? "flutter.greeting_audio_path" : "flutter.goodbye_audio_path"
-    guard let stored = UserDefaults.standard.string(forKey: key), !stored.isEmpty else {
-      return nil
-    }
-    if FileManager.default.fileExists(atPath: stored) { return stored }
+    let pinnedName = (type == "greeting") ? "active_greeting.mp3" : "active_goodbye.mp3"
+    let fm = FileManager.default
 
-    let name = (stored as NSString).lastPathComponent
-    if let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
-      let candidate = docs.appendingPathComponent(name).path
-      if FileManager.default.fileExists(atPath: candidate) { return candidate }
+    if let stored = UserDefaults.standard.string(forKey: key), !stored.isEmpty {
+      if fm.fileExists(atPath: stored) { return stored }
+
+      let name = (stored as NSString).lastPathComponent
+      if let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first {
+        let inRoot = docs.appendingPathComponent(name).path
+        if fm.fileExists(atPath: inRoot) { return inRoot }
+        let inAudio = docs.appendingPathComponent("hicar_audio").appendingPathComponent(name).path
+        if fm.fileExists(atPath: inAudio) { return inAudio }
+      }
     }
+
+    // Fallback: file pin cố định sau khi user setup lời chào trong app.
+    if let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first {
+      let pinned = docs.appendingPathComponent("hicar_audio").appendingPathComponent(pinnedName).path
+      if fm.fileExists(atPath: pinned) { return pinned }
+    }
+
     return nil
   }
 
@@ -229,8 +246,11 @@ struct PlayGreetingIntent: AppIntent {
 
   func perform() async throws -> some IntentResult & ProvidesDialog {
     HiCarAudioPlayer.shared.configureSession()
+    if HiCarAudioPlayer.shared.resolvePath(for: "greeting") == nil {
+      return .result(dialog: "Chưa cấu hình lời chào trong ứng dụng HiCar.")
+    }
     let ok = HiCarAudioPlayer.shared.play(type: "greeting")
-    let message = ok ? "Đang phát lời chào." : "Chưa cấu hình lời chào trong ứng dụng HiCar."
+    let message = ok ? "Đang phát lời chào." : "Không phát được lời chào. Thử mở lại ứng dụng HiCar rồi kết nối CarPlay."
     return .result(dialog: "\(message)")
   }
 }
@@ -244,8 +264,11 @@ struct PlayGoodbyeIntent: AppIntent {
 
   func perform() async throws -> some IntentResult & ProvidesDialog {
     HiCarAudioPlayer.shared.configureSession()
+    if HiCarAudioPlayer.shared.resolvePath(for: "goodbye") == nil {
+      return .result(dialog: "Chưa cấu hình lời tạm biệt trong ứng dụng HiCar.")
+    }
     let ok = HiCarAudioPlayer.shared.play(type: "goodbye")
-    let message = ok ? "Đang phát lời tạm biệt." : "Chưa cấu hình lời tạm biệt trong ứng dụng HiCar."
+    let message = ok ? "Đang phát lời tạm biệt." : "Không phát được lời tạm biệt. Thử mở lại ứng dụng HiCar rồi kết nối CarPlay."
     return .result(dialog: "\(message)")
   }
 }

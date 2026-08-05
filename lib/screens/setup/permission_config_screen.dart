@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import '../../core/app_colors.dart';
 import '../../providers/permission_provider.dart';
 import '../../providers/settings_provider.dart';
+import '../../widgets/premium_loading.dart';
 
 class PermissionConfigScreen extends StatefulWidget {
   final bool isFromSettings;
@@ -525,7 +526,7 @@ class _PermissionConfigScreenState extends State<PermissionConfigScreen>
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const CircularProgressIndicator(color: AppColors.primary),
+            const PremiumLoading(size: 36),
             SizedBox(height: 20.h),
             Text(
               'Đang chuẩn hóa hệ thống...',

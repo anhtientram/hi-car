@@ -139,6 +139,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     width: 0.48.sw,
                     child: SingleChildScrollView(
                       padding: EdgeInsets.fromLTRB(16.w, 12.h, 8.w, 12.h),
+                      physics: const ClampingScrollPhysics(),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
@@ -181,19 +182,15 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
                   // Cột phải: Playback Controller (Top) + Danh sách Audio (Bottom)
                   Expanded(
-                    child: RefreshIndicator(
+                    child: _HomeRefreshScroll(
                       onRefresh: () => audioProvider.syncFromServer(),
-                      color: AppColors.primary,
-                      child: SingleChildScrollView(
-                        padding: EdgeInsets.fromLTRB(8.w, 12.h, 16.w, 12.h),
-                        physics: const AlwaysScrollableScrollPhysics(),
-                        child: Column(
-                          children: [
-                            const PlaybackControllerWidget(),
-                            SizedBox(height: 12.h),
-                            const AudioListWidget(),
-                          ],
-                        ),
+                      padding: EdgeInsets.fromLTRB(8.w, 12.h, 16.w, 12.h),
+                      child: Column(
+                        children: [
+                          const PlaybackControllerWidget(),
+                          SizedBox(height: 12.h),
+                          const AudioListWidget(),
+                        ],
                       ),
                     ),
                   ),
@@ -201,56 +198,105 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               );
             }
 
-            return RefreshIndicator(
+            return _HomeRefreshScroll(
               onRefresh: () => audioProvider.syncFromServer(),
-              color: AppColors.primary,
-              backgroundColor: AppColors.card,
-              child: SingleChildScrollView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                child: Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 16.w),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      SizedBox(height: 16.h),
-                      if (user != null)
-                        Row(
-                          children: [
-                            Expanded(
-                                child: _UserProfileCard(
-                                    user: user, isCompact: true)),
-                            SizedBox(width: 10.w),
-                            if (io.Platform.isAndroid)
-                              Expanded(
-                                child: _FloatingBubbleToggleCard(
-                                  overlayProvider: overlayProvider,
-                                  isCompact: true,
-                                ),
-                              ),
-                          ],
-                        ),
-                      SizedBox(height: 16.h),
-                      const PermissionStatusWidget(),
-                      if (io.Platform.isAndroid &&
-                          settingsProvider.connectionMode ==
-                              'phone_bluetooth') ...[
-                        SizedBox(height: 16.h),
-                        const BluetoothPanelWidget(),
+              padding: EdgeInsets.symmetric(horizontal: 16.w),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(height: 16.h),
+                  if (user != null)
+                    Row(
+                      children: [
+                        Expanded(
+                            child:
+                                _UserProfileCard(user: user, isCompact: true)),
+                        SizedBox(width: 10.w),
+                        if (io.Platform.isAndroid)
+                          Expanded(
+                            child: _FloatingBubbleToggleCard(
+                              overlayProvider: overlayProvider,
+                              isCompact: true,
+                            ),
+                          ),
                       ],
-                      SizedBox(height: 16.h),
-                      const PlaybackControllerWidget(),
-                      SizedBox(height: 24.h),
-                      const AudioListWidget(),
-                      SizedBox(height: 40.h),
-                    ],
-                  ),
-                ),
+                    ),
+                  SizedBox(height: 16.h),
+                  const PermissionStatusWidget(),
+                  if (io.Platform.isAndroid &&
+                      settingsProvider.connectionMode == 'phone_bluetooth') ...[
+                    SizedBox(height: 16.h),
+                    const BluetoothPanelWidget(),
+                  ],
+                  SizedBox(height: 16.h),
+                  const PlaybackControllerWidget(),
+                  SizedBox(height: 24.h),
+                  const AudioListWidget(),
+                  SizedBox(height: 40.h),
+                ],
               ),
             );
           },
         ),
       ),
     );
+  }
+}
+
+/// Refresh + scroll không stretch/bounce đen đè lên content.
+class _HomeRefreshScroll extends StatelessWidget {
+  final Future<void> Function() onRefresh;
+  final EdgeInsetsGeometry padding;
+  final Widget child;
+
+  const _HomeRefreshScroll({
+    required this.onRefresh,
+    required this.padding,
+    required this.child,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ScrollConfiguration(
+      behavior: const _NoStretchScrollBehavior(),
+      child: RefreshIndicator(
+        onRefresh: onRefresh,
+        color: AppColors.primary,
+        backgroundColor: AppColors.card,
+        displacement: 40,
+        child: CustomScrollView(
+          // Clamping: không rubber-band → không lộ vùng đen che list khi kéo mạnh.
+          physics: const AlwaysScrollableScrollPhysics(
+            parent: ClampingScrollPhysics(),
+          ),
+          slivers: [
+            SliverPadding(
+              padding: padding,
+              sliver: SliverToBoxAdapter(child: child),
+            ),
+            // Đủ chiều cao để kéo refresh khi content ngắn, không vẽ khối đen đè list.
+            const SliverFillRemaining(
+              hasScrollBody: false,
+              child: SizedBox.shrink(),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _NoStretchScrollBehavior extends MaterialScrollBehavior {
+  const _NoStretchScrollBehavior();
+
+  @override
+  Widget buildOverscrollIndicator(
+    BuildContext context,
+    Widget child,
+    ScrollableDetails details,
+  ) {
+    // Tắt glow/stretch Material 3 — chính là vùng đen khi kéo mạnh.
+    return child;
   }
 }
 

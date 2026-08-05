@@ -6,6 +6,7 @@ import '../../core/app_colors.dart';
 import '../../core/utils/ui_utils.dart';
 import '../../providers/studio_provider.dart';
 import '../../data/models/studio_models.dart';
+import '../../widgets/premium_loading.dart';
 
 class GenAudioScreen extends StatefulWidget {
   const GenAudioScreen({super.key});
@@ -194,7 +195,7 @@ class _GenAudioScreenState extends State<GenAudioScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const CircularProgressIndicator(color: AppColors.primary),
+                  const PremiumLoading(size: 36),
                   SizedBox(height: 16.h),
                   Text('Đang khởi tạo Studio...',
                       style: TextStyle(
@@ -383,8 +384,6 @@ class _GenAudioScreenState extends State<GenAudioScreen> {
         itemBuilder: (context, index) {
           final item = templates[index];
           final isSelected = studio.selectedTemplate?.id == item.id;
-          final isPlaying = studio.isPlayingUrl(item.previewUrl);
-          final hasPreview = item.previewUrl.isNotEmpty;
 
           return GestureDetector(
             onTap: () => context.read<StudioProvider>().selectTemplate(item),
@@ -424,7 +423,7 @@ class _GenAudioScreenState extends State<GenAudioScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Top: badge + play button
+                    // Top: badge only (mẫu chỉ xem / chọn, không phát preview)
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
@@ -448,32 +447,9 @@ class _GenAudioScreenState extends State<GenAudioScreen> {
                             ),
                           ),
                         ),
-                        if (hasPreview)
-                          GestureDetector(
-                            onTap: () =>
-                                _togglePlay(item.previewUrl, item.name),
-                            behavior: HitTestBehavior.opaque,
-                            child: AnimatedContainer(
-                              duration: const Duration(milliseconds: 200),
-                              width: 28.w,
-                              height: 28.w,
-                              decoration: BoxDecoration(
-                                color: isPlaying
-                                    ? AppColors.primary
-                                    : AppColors.primary.withOpacity(0.1),
-                                borderRadius: BorderRadius.circular(8.r),
-                              ),
-                              child: Icon(
-                                isPlaying
-                                    ? Icons.stop_rounded
-                                    : Icons.play_arrow_rounded,
-                                color: isPlaying
-                                    ? Colors.white
-                                    : AppColors.primary,
-                                size: 16.sp,
-                              ),
-                            ),
-                          ),
+                        if (isSelected)
+                          Icon(Icons.check_circle_rounded,
+                              color: AppColors.primary, size: 18.sp),
                       ],
                     ),
 
@@ -590,9 +566,6 @@ class _GenAudioScreenState extends State<GenAudioScreen> {
             items: studio.backgroundMusics,
             itemLabel: (m) => m.name,
             onChanged: context.read<StudioProvider>().selectBgMusic,
-            previewUrl: studio.selectedBgMusic?.previewUrl ?? '',
-            previewLabel: studio.selectedBgMusic?.name ?? '',
-            studio: studio,
           ),
           SizedBox(height: 14.h),
           _buildSubLabel('ÂM HIỆU / CHUÔNG'),
@@ -601,9 +574,6 @@ class _GenAudioScreenState extends State<GenAudioScreen> {
             items: studio.signalSounds,
             itemLabel: (s) => s.name,
             onChanged: context.read<StudioProvider>().selectSignalSound,
-            previewUrl: studio.selectedSignalSound?.previewUrl ?? '',
-            previewLabel: studio.selectedSignalSound?.name ?? '',
-            studio: studio,
           ),
           SizedBox(height: 24.h),
           _buildSubLabel('MIXER'),
@@ -639,8 +609,6 @@ class _GenAudioScreenState extends State<GenAudioScreen> {
       runSpacing: 8.h,
       children: studio.voiceSamples.map((v) {
         final isSelected = studio.selectedVoice?.id == v.id;
-        final url = v.previewUrl ?? '';
-        final isPlaying = url.isNotEmpty && studio.isPlayingUrl(url);
 
         return GestureDetector(
           onTap: () => context.read<StudioProvider>().selectVoice(v),
@@ -656,21 +624,6 @@ class _GenAudioScreenState extends State<GenAudioScreen> {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (url.isNotEmpty)
-                  GestureDetector(
-                    onTap: () => _togglePlay(url, v.name),
-                    behavior: HitTestBehavior.opaque,
-                    child: Padding(
-                      padding: EdgeInsets.only(right: 6.w),
-                      child: Icon(
-                        isPlaying
-                            ? Icons.stop_rounded
-                            : Icons.play_arrow_rounded,
-                        size: 16.sp,
-                        color: isSelected ? Colors.white : AppColors.primary,
-                      ),
-                    ),
-                  ),
                 Icon(
                   v.gender == 'female'
                       ? Icons.female_rounded
@@ -702,67 +655,33 @@ class _GenAudioScreenState extends State<GenAudioScreen> {
     required List<T> items,
     required String Function(T) itemLabel,
     required ValueChanged<T?> onChanged,
-    required String previewUrl,
-    required String previewLabel,
-    required StudioProvider studio,
   }) {
-    final isPlaying = previewUrl.isNotEmpty && studio.isPlayingUrl(previewUrl);
-
-    return Row(
-      children: [
-        Expanded(
-          child: Container(
-            height: 48.h,
-            padding: EdgeInsets.symmetric(horizontal: 14.w),
-            decoration: BoxDecoration(
-              color: AppColors.cardElevated.withOpacity(0.5),
-              borderRadius: BorderRadius.circular(12.r),
-              border: Border.all(color: AppColors.border),
-            ),
-            child: DropdownButtonHideUnderline(
-              child: DropdownButton<T>(
-                value: value,
-                isExpanded: true,
-                dropdownColor: AppColors.cardElevated,
-                style: TextStyle(
-                    fontSize: 12.sp,
-                    color: AppColors.textPrimary,
-                    fontWeight: FontWeight.w500),
-                items: items
-                    .map((e) => DropdownMenuItem<T>(
-                          value: e,
-                          child: Text(itemLabel(e),
-                              overflow: TextOverflow.ellipsis),
-                        ))
-                    .toList(),
-                onChanged: onChanged,
-              ),
-            ),
-          ),
+    return Container(
+      height: 48.h,
+      padding: EdgeInsets.symmetric(horizontal: 14.w),
+      decoration: BoxDecoration(
+        color: AppColors.cardElevated.withOpacity(0.5),
+        borderRadius: BorderRadius.circular(12.r),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<T>(
+          value: value,
+          isExpanded: true,
+          dropdownColor: AppColors.cardElevated,
+          style: TextStyle(
+              fontSize: 12.sp,
+              color: AppColors.textPrimary,
+              fontWeight: FontWeight.w500),
+          items: items
+              .map((e) => DropdownMenuItem<T>(
+                    value: e,
+                    child: Text(itemLabel(e), overflow: TextOverflow.ellipsis),
+                  ))
+              .toList(),
+          onChanged: onChanged,
         ),
-        if (previewUrl.isNotEmpty)
-          Padding(
-            padding: EdgeInsets.only(left: 10.w),
-            child: GestureDetector(
-              onTap: () => _togglePlay(previewUrl, previewLabel),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                width: 48.h,
-                height: 48.h,
-                decoration: BoxDecoration(
-                  color: isPlaying
-                      ? AppColors.primary
-                      : AppColors.primary.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(12.r),
-                ),
-                child: Icon(
-                  isPlaying ? Icons.stop_rounded : Icons.play_arrow_rounded,
-                  color: isPlaying ? Colors.white : AppColors.primary,
-                ),
-              ),
-            ),
-          ),
-      ],
+      ),
     );
   }
 
@@ -791,11 +710,7 @@ class _GenAudioScreenState extends State<GenAudioScreen> {
             ),
             child: Center(
               child: studio.isLoadingPreview
-                  ? const SizedBox(
-                      width: 22,
-                      height: 22,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2.5, color: Colors.white))
+                  ? const PremiumLoading(size: 22, color: Colors.white, strokeWidth: 2.5)
                   : Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -817,35 +732,122 @@ class _GenAudioScreenState extends State<GenAudioScreen> {
         // Play/stop the last preview
         if (studio.previewResponse != null) ...[
           SizedBox(height: 12.h),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: () => _togglePlay(
-                      studio.previewResponse!.previewUrl, 'Bản nghe thử'),
-                  icon: Icon(
-                    studio.isPlayingUrl(studio.previewResponse!.previewUrl)
-                        ? Icons.stop_rounded
-                        : Icons.play_circle_outline_rounded,
-                    size: 18.sp,
-                  ),
-                  label: Text(
-                    studio.isPlayingUrl(studio.previewResponse!.previewUrl)
-                        ? 'Dừng phát'
-                        : 'Nghe lại bản mix',
-                    style: TextStyle(fontSize: 13.sp),
-                  ),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: AppColors.primary,
-                    side: const BorderSide(color: AppColors.primary),
-                    minimumSize: Size(0, 48.h),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14.r)),
-                  ),
+          Builder(builder: (context) {
+            final previewUrl = studio.previewResponse!.previewUrl;
+            final isPlaying = studio.isPlayingUrl(previewUrl);
+
+            return AnimatedContainer(
+              duration: const Duration(milliseconds: 220),
+              padding: EdgeInsets.all(12.w),
+              decoration: BoxDecoration(
+                color: isPlaying
+                    ? AppColors.primary.withOpacity(0.12)
+                    : AppColors.cardElevated.withOpacity(0.45),
+                borderRadius: BorderRadius.circular(16.r),
+                border: Border.all(
+                  color: isPlaying ? AppColors.primary : AppColors.border,
+                  width: isPlaying ? 1.5 : 1,
                 ),
+                boxShadow: isPlaying
+                    ? [
+                        BoxShadow(
+                          color: AppColors.primary.withOpacity(0.18),
+                          blurRadius: 12,
+                          offset: const Offset(0, 3),
+                        )
+                      ]
+                    : null,
               ),
-            ],
-          ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 40.w,
+                    height: 40.w,
+                    decoration: BoxDecoration(
+                      color: isPlaying
+                          ? AppColors.primary
+                          : AppColors.primary.withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(12.r),
+                    ),
+                    child: Icon(
+                      isPlaying
+                          ? Icons.graphic_eq_rounded
+                          : Icons.headphones_rounded,
+                      color: isPlaying ? Colors.white : AppColors.primary,
+                      size: 20.sp,
+                    ),
+                  ),
+                  SizedBox(width: 12.w),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          isPlaying ? 'Đang phát bản mix' : 'Bản nghe thử AI',
+                          style: TextStyle(
+                            color: AppColors.textPrimary,
+                            fontSize: 13.sp,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        SizedBox(height: 2.h),
+                        Text(
+                          isPlaying
+                              ? 'Nhấn Dừng để tắt preview'
+                              : 'Nghe lại trước khi gửi lên hệ thống',
+                          style: TextStyle(
+                            color: isPlaying
+                                ? AppColors.primary
+                                : AppColors.textHint,
+                            fontSize: 10.sp,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      onTap: () => _togglePlay(previewUrl, 'Bản nghe thử'),
+                      borderRadius: BorderRadius.circular(12.r),
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 200),
+                        padding: EdgeInsets.symmetric(
+                            horizontal: 14.w, vertical: 10.h),
+                        decoration: BoxDecoration(
+                          color: isPlaying
+                              ? AppColors.error
+                              : AppColors.primary,
+                          borderRadius: BorderRadius.circular(12.r),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              isPlaying
+                                  ? Icons.stop_rounded
+                                  : Icons.play_arrow_rounded,
+                              color: Colors.white,
+                              size: 18.sp,
+                            ),
+                            SizedBox(width: 4.w),
+                            Text(
+                              isPlaying ? 'Dừng' : 'Nghe thử',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 12.sp,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }),
         ],
 
         // Gửi lời chào lên hệ thống (tạo đơn → recreate). Fire-and-forget, không hiện giá.
@@ -863,12 +865,8 @@ class _GenAudioScreenState extends State<GenAudioScreen> {
               ),
               child: Center(
                 child: studio.isLoadingOrder
-                    ? const SizedBox(
-                        width: 22,
-                        height: 22,
-                        child: CircularProgressIndicator(
-                            strokeWidth: 2.5, color: AppColors.success),
-                      )
+                    ? const PremiumLoading(
+                        size: 22, color: AppColors.success, strokeWidth: 2.5)
                     : Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
@@ -908,11 +906,8 @@ class _GenAudioScreenState extends State<GenAudioScreen> {
               ),
               child: Center(
                 child: studio.isLoadingOrder
-                    ? SizedBox(
-                        width: 22,
-                        height: 22,
-                        child: CircularProgressIndicator(
-                            strokeWidth: 2.5, color: AppColors.success))
+                    ? const PremiumLoading(
+                        size: 22, color: AppColors.success, strokeWidth: 2.5)
                     : Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
