@@ -120,10 +120,7 @@
             android:name="flutterEmbedding"
             android:value="2" />
 
-        <!-- ===== ANDROID AUTO ===== -->
-        <meta-data
-            android:name="com.google.android.gms.car.application"
-            android:resource="@xml/automotive_app_desc" />
+        <!-- Không khai báo com.google.android.gms.car.application (Play Auto QA). -->
 
     </application>
 
