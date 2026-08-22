@@ -329,6 +329,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       return;
     }
 
+    // Chờ danh sách nhạc đồng bộ (tối đa ~10s) để chọn đúng lời chào đang đặt.
     int retryCount = 0;
     while (_audioProvider.audioList.isEmpty && retryCount < 10) {
       debugPrint('Main: Audio list empty, waiting... ($retryCount)');
@@ -336,13 +337,17 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       retryCount++;
     }
 
-    if (_audioProvider.audioList.isNotEmpty) {
-      debugPrint('Main: Triggering play greeting on open...');
-      _hasTriggeredOpenGreeting = true;
-      await _audioProvider.playGreetingViaNative(allowAutostartRetry: true);
-    } else {
+    // Vẫn thử phát kể cả khi danh sách còn trống (offline / sync chậm):
+    // playGreetingViaNative tự fallback sang path đã lưu / file boot. Trước đây nhánh
+    // else chặn hẳn nên máy chưa sync kịp là KHÔNG tự phát → "lúc được lúc không".
+    _hasTriggeredOpenGreeting = true;
+    debugPrint(
+        'Main: Triggering play greeting on open (listEmpty=${_audioProvider.audioList.isEmpty})...');
+    final ok =
+        await _audioProvider.playGreetingViaNative(allowAutostartRetry: true);
+    if (!ok) {
       debugPrint(
-          'Main: Could not trigger greeting - list still empty after 10s');
+          'Main: play greeting on open chưa phát được (chưa cấu hình lời chào?)');
     }
   }
 

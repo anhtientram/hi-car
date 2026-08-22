@@ -92,8 +92,29 @@ dependencies {
     implementation "androidx.core:core-ktx:1.12.0"
 }
 
-def overlayPluginJavaDir = file("${System.getenv('PUB_CACHE') ?: "${System.getProperty('user.home')}/AppData/Local/Pub/Cache/hosted/pub.dev"}/flutter_overlay_window-0.5.0/android/src/main/java/flutter/overlay/window/flutter_overlay_window")
 def overlayPatchFile = file("${rootProject.projectDir}/overlay_patches/flutter/overlay/window/flutter_overlay_window/OverlayService.java")
+def overlayPluginRelPath = "hosted/pub.dev/flutter_overlay_window-0.5.0/android/src/main/java/flutter/overlay/window/flutter_overlay_window"
+
+// Tìm ĐÚNG thư mục plugin trong pub cache trên mọi HĐH (macOS/Linux/Windows/CI).
+// Trước đây chỉ hard-code đường Windows nên trên macOS patch không được áp → app biên
+// dịch bản plugin gốc (kéo nút ra ngoài màn hình + không đăng ký OverlayBridge).
+def resolveOverlayPluginDir = {
+    def roots = []
+    def pubEnv = System.getenv('PUB_CACHE')
+    if (pubEnv != null && !pubEnv.trim().isEmpty()) roots << pubEnv
+    def home = System.getProperty('user.home')
+    roots << "${home}/.pub-cache"                       // macOS / Linux
+    def localAppData = System.getenv('LOCALAPPDATA')
+    if (localAppData != null && !localAppData.trim().isEmpty()) roots << "${localAppData}/Pub/Cache"
+    def appData = System.getenv('APPDATA')
+    if (appData != null && !appData.trim().isEmpty()) roots << "${appData}/Pub/Cache"
+    roots << "${home}/AppData/Local/Pub/Cache"          // Windows (dự phòng)
+    for (root in roots) {
+        def dir = file("${root}/${overlayPluginRelPath}")
+        if (dir.exists()) return dir
+    }
+    return null
+}
 
 tasks.register("applyOverlayPatch") {
     doLast {
@@ -101,8 +122,14 @@ tasks.register("applyOverlayPatch") {
             println("HiCar: OverlayService patch not found, skip")
             return
         }
-        overlayPluginJavaDir.mkdirs()
-        def dest = new File(overlayPluginJavaDir, "OverlayService.java")
+        def targetDir = resolveOverlayPluginDir()
+        if (targetDir == null) {
+            throw new GradleException(
+                "HiCar: không tìm thấy flutter_overlay_window trong pub cache để áp patch OverlayService.java. " +
+                "Chạy 'flutter pub get' trước, hoặc đặt biến môi trường PUB_CACHE."
+            )
+        }
+        def dest = new File(targetDir, "OverlayService.java")
         ant.copy(file: overlayPatchFile, tofile: dest, overwrite: true)
         println("HiCar: applied OverlayService patch → ${dest}")
     }

@@ -140,6 +140,10 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
     // Chỉ mở lại alarm retry MỘT lần mỗi phiên khi MediaPlayer lỗi (chống loop lỗi liên tục).
     private var bootErrorRetryScheduledForSession: Long = -1L
 
+    // true khi lần dừng sắp tới là do người dùng bấm STOP (nút nổi) — để báo Flutter là dừng
+    // thủ công, tránh chế độ Màn Độ minimizeApp làm "văng" app đang dùng (YouTube...).
+    @Volatile private var userInitiatedStop: Boolean = false
+
     // ==============================
     // Lifecycle
     // ==============================
@@ -289,7 +293,12 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
                 val preferBootAudio = intent.getBooleanExtra(EXTRA_PREFER_BOOT_AUDIO, false)
                 triggerGreetingDebounced(useBootAudio = preferBootAudio, source = "intent")
             }
-            ACTION_STOP_AUDIO -> stopPlayback()
+            ACTION_STOP_AUDIO -> {
+                // Người dùng bấm STOP (nút nổi) → đánh dấu để báo về Flutter là dừng THỦ CÔNG,
+                // tránh chế độ Màn Độ hiểu nhầm "phát xong" rồi minimizeApp (đá app ngoài ra).
+                userInitiatedStop = true
+                stopPlayback()
+            }
             ACTION_BLUETOOTH_DISCONNECTED -> {
                 loadPrefs()
                 cancelDelayedPlay()
@@ -1333,8 +1342,13 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
 
         // Notify Flutter when playback completes via Plugin
         if (state == PlaybackStateCompat.STATE_STOPPED) {
+            // isManual=true khi dừng do người dùng bấm STOP → Flutter không minimize app
+            // (chế độ Màn Độ). Tiêu thụ cờ 1 lần rồi reset để lần phát xong tự nhiên tiếp theo
+            // vẫn được coi là auto-complete.
+            val manual = userInitiatedStop
+            userInitiatedStop = false
             // Loại bỏ độ trễ 1s để UI cập nhật tức thì, tránh bị nháy khi phát bản tiếp theo
-            HiCarPlugin.instance?.invokeServiceMethod("onPlaybackComplete")
+            HiCarPlugin.instance?.invokeServiceMethod("onPlaybackComplete", manual)
             OverlayBridge.notifyPlaybackComplete()
         }
     }

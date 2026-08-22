@@ -2,7 +2,7 @@ name: hi_car
 description: "Giọng Thương Gia - Automotive Audio Background System"
 publish_to: "none"
 
-version: 1.0.10+13
+version: 1.0.11+14
 
 environment:
   sdk: ">=3.2.3 <4.0.0"

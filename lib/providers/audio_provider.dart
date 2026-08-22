@@ -154,10 +154,12 @@ class AudioProvider extends ChangeNotifier {
       ServiceChannel.instance.importNativeDiagnostics().catchError((_) {});
     });
 
-    ServiceChannel.instance.onPlaybackComplete = () {
-      debugPrint('🔔 [AudioProvider] NHẬN TÍN HIỆU: PHÁT XONG TỪ NATIVE');
-      // Nếu là tự động phát xong (không phải bấm dừng thủ công)
-      _stopNativePlaybackState(isManual: false);
+    ServiceChannel.instance.onPlaybackComplete = (isManual) {
+      debugPrint(
+          '🔔 [AudioProvider] NHẬN TÍN HIỆU: PHÁT XONG TỪ NATIVE (isManual=$isManual)');
+      // isManual=true → người dùng bấm STOP ở nút nổi (đi thẳng native, không qua
+      // isolate chính) → KHÔNG được coi là phát xong tự nhiên, tránh thu nhỏ app.
+      _stopNativePlaybackState(isManual: isManual);
     };
 
     ServiceChannel.instance.onPlaybackStarted = (type) {

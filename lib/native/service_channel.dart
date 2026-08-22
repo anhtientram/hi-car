@@ -10,14 +10,17 @@ class ServiceChannel {
   static final ServiceChannel instance = ServiceChannel._();
 
   static const _channel = MethodChannel(AppConstants.serviceChannel);
-  VoidCallback? onPlaybackComplete;
+  /// [isManual] = true khi native dừng do người dùng bấm STOP (nút nổi), false khi
+  /// nhạc phát xong tự nhiên hoặc bị ngắt. Dùng để chế độ Màn Độ không thu nhỏ app
+  /// (minimizeApp) khi người dùng chủ động bấm dừng.
+  void Function(bool isManual)? onPlaybackComplete;
   void Function(String type)? onPlaybackStarted;
 
   void init() {
     _channel.setMethodCallHandler((call) async {
       debugPrint('ServiceChannel: Received method call: ${call.method}');
       if (call.method == 'onPlaybackComplete') {
-        onPlaybackComplete?.call();
+        onPlaybackComplete?.call(call.arguments == true);
       } else if (call.method == 'onPlaybackStarted') {
         onPlaybackStarted?.call(call.arguments?.toString() ?? 'greeting');
       } else if (call.method == 'onNativeError') {
