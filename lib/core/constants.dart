@@ -28,6 +28,8 @@ class AppConstants {
   // ===== Audio Dirs =====
   static const String audioDirName = 'hicar_audio';
   static const String defaultAudioAsset = 'assets/audio/audio_default.MP3';
+  // Giữ nguyên id cũ 'demo_default' để lựa chọn đã lưu trên máy người dùng không bị mất.
+  static const String defaultGreetingId = 'demo_default';
   static const String defaultGoodbyeId = 'default_goodbye';
   static const String defaultGoodbyeAsset = 'assets/audio/good_bye.MP3';
 

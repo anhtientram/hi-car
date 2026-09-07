@@ -1,0 +1,29 @@
+---
+description: Native MediaPlayer, audio focus, and recovery rules
+globs: android/**/*.kt,lib/providers/audio_provider.dart,lib/native/**/*.dart
+alwaysApply: false
+---
+
+# Audio playback
+
+Primary file: `AudioForegroundService.kt` (tags `HiCarAudio` / `HiCarService`).
+
+## Must
+
+- New `MediaPlayer` each play; `prepareAsync`; `setWakeMode`; never reuse after `MEDIA_ERROR_SERVER_DIED`.
+- On error: `release` → null → retry with new player (all modes, not only box boot).
+- Short greeting: `AUDIOFOCUS_LOSS` must **not** hard-`stopPlayback()` if clip not ~90% done — re-request focus / continue; cap regain attempts.
+- `LOSS_TRANSIENT`: pause + resume timeout (~1.5s); if focus never returns, best-effort resume.
+- Stall watchdog: if `!isPlaying` mid-clip without focus-wait → retry.
+- Log focus / stop / retry via `HiCarDiagnosticLog` with position/duration.
+
+## Don't
+
+- Call `requestAudioFocus` synchronously inside focus callback (post to Handler).
+- `release()` MediaPlayer synchronously inside its own error/completion callback (post).
+- Leave dead `MediaPlayer` instance for next `reset()`.
+
+## Flutter side
+
+- `playGreetingViaNative` may fall back to bundled asset if active file missing/invalid.
+- Default greeting UI only when Demo Beta on; silent fallback still allowed.

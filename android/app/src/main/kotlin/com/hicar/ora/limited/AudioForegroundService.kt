@@ -56,6 +56,22 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
         private const val MAX_FOCUS_ATTEMPTS = 4
         private const val FOCUS_RETRY_MS = 2500L
 
+        // 🟢 TỰ PHỤC HỒI PHÁT NHẠC (mọi chế độ, không riêng boot Box).
+        //    Màn độ / box rẻ tiền hay cắt ngang audio: HAL chết (MEDIA_ERROR_SERVER_DIED),
+        //    app radio của máy cướp focus, hoặc route bị đổi giữa chừng. Nếu chỉ báo lỗi rồi
+        //    thôi thì người dùng nghe được 2–3s là tịt và không tự khỏi cho tới khi mở lại app.
+        private const val MAX_PLAYBACK_RETRIES = 2
+        private const val PLAYBACK_RETRY_DELAY_MS = 800L
+        // Nhịp kiểm tra playback còn chạy thật hay đã chết câm.
+        private const val PLAYBACK_WATCH_INTERVAL_MS = 1000L
+        // Đã phát tới tỉ lệ này của thời lượng thì coi như xong, không phát lại nữa.
+        private const val PLAYED_ENOUGH_RATIO = 0.9
+        // Mất focus tạm thời: quá hạn này chưa được trả lại thì phát tiếp best-effort thay vì
+        // đứng im vĩnh viễn (nhiều màn độ cướp focus rồi không bao giờ nhả).
+        private const val FOCUS_RESUME_TIMEOUT_MS = 1500L
+        // Số lần giành lại focus tối đa trong một clip — chặn ping-pong vô hạn với app khác.
+        private const val MAX_FOCUS_REGAIN_ATTEMPTS = 2
+
         @Volatile var connectionMode: String = "phone_bluetooth"
         @Volatile var targetDeviceAddress: String = ""
         @Volatile var delaySeconds: Int = 5
@@ -72,6 +88,13 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
         private const val BT_MIN_DELAY_SEC = 3
         private const val BT_A2DP_POLL_MS = 500L
         private const val BT_A2DP_WATCH_TIMEOUT_MS = 90_000L
+        // Xe hay flap ACL/A2DP 20–30 phút/lần (radio, sniff mode, HU rẻ). Ngắt ngắn không
+        // được tính chuyến mới — chỉ hết phiên khi ngắt đủ lâu (rời xe) rồi mới chào lại.
+        private const val BT_SESSION_GRACE_MS = 15 * 60 * 1000L
+        private const val PREF_BT_GREETING_PLAYED = "flutter.bt_greeting_played"
+        private const val PREF_BT_GREETING_ADDRESS = "flutter.bt_greeting_played_address"
+        private const val PREF_BT_GREETING_AT = "flutter.bt_greeting_played_at"
+        private const val PREF_BT_LAST_DISCONNECT_AT = "flutter.bt_last_acl_disconnect_at"
         // Box boot: tối thiểu đã phát bao lâu thì coi là thành công (focus loss / stop giữa chừng).
         private const val BOOT_MIN_PLAYED_TO_COMPLETE_MS = 5_000L
 
@@ -91,6 +114,14 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
         @Volatile var aaGreetingPlayedThisConnection: Boolean = false
         // Chỉ bật cờ trên khi lời chào do AUTO (không phải bấm nút thủ công).
         @Volatile var pendingAaAutoGreeting: Boolean = false
+
+        // 🟢 BLUETOOTH: một lần chào / phiên (giống AA). Debounce 8s không đủ vì HU flap
+        //    ACL sau 20–30 phút và ACTION_BT_WATCH_A2DP từng xóa lastGreetingTriggerAtMs.
+        @Volatile var btGreetingPlayedThisConnection: Boolean = false
+        @Volatile var pendingBtAutoGreeting: Boolean = false
+        @Volatile var btSessionAddress: String = ""
+        @Volatile var btGreetingPlayedAtWallMs: Long = 0L
+        @Volatile var btLastAclDisconnectAtWallMs: Long = 0L
 
         // CarConnection (androidx.car.app) – contract CÔNG KHAI để phát hiện Android Auto
         // (cả CÓ DÂY lẫn KHÔNG DÂY) mà không cần thêm dependency / nâng minSdk:
@@ -125,6 +156,8 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
     private var btA2dpWatchRunnable: Runnable? = null
     private var btA2dpWatchStartedAtMs: Long = 0L
     private var btA2dpWatchAddress: String = ""
+    private var btSessionEndRunnable: Runnable? = null
+    private var btSessionLoaded: Boolean = false
     private var bootGreetingWatchRunnable: Runnable? = null
     private var bootGreetingWatchStartedAtMs: Long = 0L
     private var activeBootSessionId: Long = -1L
@@ -143,6 +176,17 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
     // true khi lần dừng sắp tới là do người dùng bấm STOP (nút nổi) — để báo Flutter là dừng
     // thủ công, tránh chế độ Màn Độ minimizeApp làm "văng" app đang dùng (YouTube...).
     @Volatile private var userInitiatedStop: Boolean = false
+
+    // Clip đang phát — giữ lại để phát lại được khi bị cắt ngang.
+    private var currentPath: String = ""
+    private var currentType: String = ""
+    private var currentIsBootAutoPlay: Boolean = false
+    @Volatile private var preparing: Boolean = false
+    private var playbackRetryCount: Int = 0
+    private var focusRegainAttempts: Int = 0
+    private var playbackDurationMs: Long = 0L
+    private var focusResumeRunnable: Runnable? = null
+    private var playbackWatchdogRunnable: Runnable? = null
 
     // ==============================
     // Lifecycle
@@ -240,6 +284,7 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
 
         // 🟢 CẬP NHẬT TRẠNG THÁI MEDIA SESSION: Nếu không phải mode AA, ngắt kết nối với màn hình xe
         updateMediaSessionState()
+        restoreBtSessionIfNeeded(prefs)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -305,7 +350,10 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
                 cancelAaProjectionWatch()
                 cancelBtA2dpWatch()
                 stopPlayback()
-                lastGreetingTriggerAtMs = 0L
+                // Không xóa lastGreetingTriggerAtMs / cờ phiên: ngắt ngắn (flap 20–30p) không
+                // được phép chào lại. Hết phiên sau BT_SESSION_GRACE_MS mới mở cửa.
+                pendingBtAutoGreeting = false
+                onBtAclDisconnected()
             }
             ACTION_AA_WATCH_PROJECTION -> {
                 loadPrefs()
@@ -322,10 +370,19 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
                 loadPrefs()
                 val address = intent.getStringExtra("deviceAddress") ?: targetDeviceAddress
                 if (connectionMode == "phone_bluetooth" && autoPlayEnabled && address.isNotEmpty()) {
-                    lastGreetingTriggerAtMs = 0L
-                    val alreadyReady = BluetoothReceiver.isA2dpConnected(this, address)
-                    HiCarDiagnosticLog.d("HiCarBT", "BT ACL → watch A2DP for $address (a2dpReady=$alreadyReady)")
-                    startBtA2dpWatch(address)
+                    cancelBtSessionEnd()
+                    // Reconnect cùng phiên → KHÔNG reset debounce (trước đây = 0 khiến flap ACL
+                    // 20–30 phút phát lại lời chào).
+                    if (isBtSessionGreetingConsumed(address)) {
+                        HiCarDiagnosticLog.d(
+                            "HiCarBT",
+                            "BT ACL → bỏ qua chào (đã phát phiên này, addr=$address)"
+                        )
+                    } else {
+                        val alreadyReady = BluetoothReceiver.isA2dpConnected(this, address)
+                        HiCarDiagnosticLog.d("HiCarBT", "BT ACL → watch A2DP for $address (a2dpReady=$alreadyReady)")
+                        startBtA2dpWatch(address)
+                    }
                 } else {
                     HiCarDiagnosticLog.w("HiCarBT", "BT watch bỏ qua: mode=$connectionMode, autoPlay=$autoPlayEnabled, addr='$address'")
                 }
@@ -480,8 +537,17 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
                 }
                 val elapsed = SystemClock.elapsedRealtime() - btA2dpWatchStartedAtMs
                 if (BluetoothReceiver.isA2dpConnected(this@AudioForegroundService, address)) {
+                    if (isBtSessionGreetingConsumed(address)) {
+                        HiCarDiagnosticLog.d(
+                            "HiCarBT",
+                            "A2DP ready after ${elapsed}ms → bỏ qua chào (đã phát phiên này)"
+                        )
+                        cancelBtA2dpWatch()
+                        return
+                    }
                     HiCarDiagnosticLog.d("HiCarBT", "A2DP ready after ${elapsed}ms → trigger greeting (loa xe đã sẵn sàng)")
                     cancelBtA2dpWatch()
+                    pendingBtAutoGreeting = true
                     triggerGreetingDebounced(useBootAudio = false, source = "a2dp_ready")
                     return
                 }
@@ -500,7 +566,144 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
         btA2dpWatchRunnable?.let { handler.removeCallbacks(it) }
         btA2dpWatchRunnable = null
         btA2dpWatchStartedAtMs = 0L
-        btA2dpWatchAddress = ""
+        // Giữ btA2dpWatchAddress: cancel ngay trước khi trigger greeting, cần address để chốt phiên.
+    }
+
+    /**
+     * Một lần chào / phiên Bluetooth. HU hay gửi ACL_DISCONNECTED + ACL_CONNECTED định kỳ
+     * (radio, sniff, stack refresh) — nếu reset cờ ngay lúc ngắt thì 20–30 phút lại chào.
+     * Chỉ hết phiên khi ngắt đủ [BT_SESSION_GRACE_MS] (coi như rời xe).
+     */
+    private fun restoreBtSessionIfNeeded(prefs: android.content.SharedPreferences) {
+        if (btSessionLoaded) return
+        btSessionLoaded = true
+        btGreetingPlayedThisConnection = prefs.getBoolean(PREF_BT_GREETING_PLAYED, false)
+        btSessionAddress = prefs.getString(PREF_BT_GREETING_ADDRESS, "") ?: ""
+        btGreetingPlayedAtWallMs = prefs.getLong(PREF_BT_GREETING_AT, 0L)
+        btLastAclDisconnectAtWallMs = prefs.getLong(PREF_BT_LAST_DISCONNECT_AT, 0L)
+
+        val now = System.currentTimeMillis()
+        if (btGreetingPlayedThisConnection && btSessionAddress.isNotEmpty()) {
+            val stillLinked = BluetoothReceiver.isAddressConnected(this, btSessionAddress)
+            if (!stillLinked && btLastAclDisconnectAtWallMs == 0L) {
+                btLastAclDisconnectAtWallMs = if (btGreetingPlayedAtWallMs > 0L) btGreetingPlayedAtWallMs else now
+            }
+            if (!stillLinked &&
+                btLastAclDisconnectAtWallMs > 0L &&
+                now - btLastAclDisconnectAtWallMs >= BT_SESSION_GRACE_MS
+            ) {
+                HiCarDiagnosticLog.d("HiCarBT", "BT session hết hạn lúc restore (ngắt đủ lâu) → cho phép chào lần sau")
+                clearBtSession(persist = true)
+                return
+            }
+        }
+        HiCarDiagnosticLog.d(
+            "HiCarBT",
+            "BT session restore: played=$btGreetingPlayedThisConnection addr=$btSessionAddress"
+        )
+    }
+
+    private fun isBtSessionGreetingConsumed(address: String): Boolean {
+        if (address.isEmpty()) return false
+        expireBtSessionIfStale(address)
+        return btGreetingPlayedThisConnection &&
+            btSessionAddress.isNotEmpty() &&
+            btSessionAddress.equals(address, ignoreCase = true)
+    }
+
+    private fun expireBtSessionIfStale(address: String) {
+        if (!btGreetingPlayedThisConnection) return
+        if (btSessionAddress.isNotEmpty() && !btSessionAddress.equals(address, ignoreCase = true)) {
+            HiCarDiagnosticLog.d("HiCarBT", "BT session đổi xe $btSessionAddress → $address → chào lại")
+            clearBtSession(persist = true)
+            return
+        }
+        val now = System.currentTimeMillis()
+        if (btLastAclDisconnectAtWallMs > 0L &&
+            now - btLastAclDisconnectAtWallMs >= BT_SESSION_GRACE_MS &&
+            !BluetoothReceiver.isAddressConnected(this, address)
+        ) {
+            HiCarDiagnosticLog.d("HiCarBT", "BT session hết grace ${BT_SESSION_GRACE_MS}ms → chào lại")
+            clearBtSession(persist = true)
+        }
+    }
+
+    private fun markBtSessionGreetingPlayed(address: String) {
+        if (address.isEmpty()) return
+        btGreetingPlayedThisConnection = true
+        pendingBtAutoGreeting = false
+        btSessionAddress = address
+        btGreetingPlayedAtWallMs = System.currentTimeMillis()
+        btLastAclDisconnectAtWallMs = 0L
+        persistBtSession()
+        HiCarDiagnosticLog.d("HiCarBT", "BT auto-greeting started → chốt phiên $address")
+    }
+
+    private fun onBtAclDisconnected() {
+        btLastAclDisconnectAtWallMs = System.currentTimeMillis()
+        persistBtSession()
+        scheduleBtSessionEnd()
+        HiCarDiagnosticLog.d(
+            "HiCarBT",
+            "BT ACL ngắt → giữ phiên ${BT_SESSION_GRACE_MS}ms (chống flap 20–30p)"
+        )
+    }
+
+    private fun scheduleBtSessionEnd() {
+        cancelBtSessionEnd()
+        btSessionEndRunnable = Runnable {
+            btSessionEndRunnable = null
+            HiCarDiagnosticLog.d("HiCarBT", "BT session grace hết → phiên mới được chào")
+            clearBtSession(persist = true)
+        }
+        handler.postDelayed(btSessionEndRunnable!!, BT_SESSION_GRACE_MS)
+    }
+
+    private fun cancelBtSessionEnd() {
+        btSessionEndRunnable?.let { handler.removeCallbacks(it) }
+        btSessionEndRunnable = null
+        if (btLastAclDisconnectAtWallMs != 0L && BluetoothReceiver.isAddressConnected(this, btSessionAddress.ifEmpty { targetDeviceAddress })) {
+            btLastAclDisconnectAtWallMs = 0L
+            persistBtSession()
+        }
+    }
+
+    private fun clearBtSession(persist: Boolean) {
+        btGreetingPlayedThisConnection = false
+        pendingBtAutoGreeting = false
+        btSessionAddress = ""
+        btGreetingPlayedAtWallMs = 0L
+        btLastAclDisconnectAtWallMs = 0L
+        if (persist) persistBtSession()
+    }
+
+    private fun persistBtSession() {
+        val values = mapOf<String, Any>(
+            PREF_BT_GREETING_PLAYED to btGreetingPlayedThisConnection,
+            PREF_BT_GREETING_ADDRESS to btSessionAddress,
+            PREF_BT_GREETING_AT to btGreetingPlayedAtWallMs,
+            PREF_BT_LAST_DISCONNECT_AT to btLastAclDisconnectAtWallMs
+        )
+        writeBtSessionPrefs(applicationContext, values)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            writeBtSessionPrefs(applicationContext.createDeviceProtectedStorageContext(), values)
+        }
+    }
+
+    private fun writeBtSessionPrefs(ctx: Context, values: Map<String, Any>) {
+        try {
+            val editor = ctx.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE).edit()
+            values.forEach { (key, value) ->
+                when (value) {
+                    is Boolean -> editor.putBoolean(key, value)
+                    is String -> editor.putString(key, value)
+                    is Long -> editor.putLong(key, value)
+                }
+            }
+            editor.apply()
+        } catch (e: Exception) {
+            HiCarDiagnosticLog.w("HiCarBT", "persist BT session thất bại: ${e.message}")
+        }
     }
 
     private fun applyBootSessionFromIntent(intent: Intent?) {
@@ -711,7 +914,7 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
      * Lên lịch phát lời chào với chống lặp theo ngữ cảnh:
      * - Boot (Box): cờ một-lần/tiến-trình khi phát THÀNH CÔNG — broadcast boot có thể cách nhau hàng chục giây.
      * - Android Auto: cờ một-lần/phiên — chỉ bật khi nhạc THỰC SỰ bắt đầu phát (CarConnection=PROJECTION).
-     * - Bluetooth: debounce theo thời gian, reset khi ngắt kết nối.
+     * - Bluetooth: cờ một-lần/phiên + grace 15p sau ACL ngắt (HU flap 20–30p không chào lại).
      */
     private fun triggerGreetingDebounced(useBootAudio: Boolean, source: String) {
         if (useBootAudio) {
@@ -739,7 +942,7 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
                 )
                 return
             }
-            if (mediaPlayer?.isPlaying == true) {
+            if (isPlayingSafe() || preparing) {
                 HiCarDiagnosticLog.d("HiCarService", "Boot greeting ($source) bỏ qua – đang phát")
                 return
             }
@@ -754,6 +957,18 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
         if (connectionMode == "phone_android_auto") {
             if (aaGreetingPlayedThisConnection) {
                 Log.d("HiCarService", "AA greeting ($source) bỏ qua – đã phát trong phiên kết nối này")
+                return
+            }
+        }
+
+        if (connectionMode == "phone_bluetooth") {
+            val addr = btA2dpWatchAddress.ifEmpty { targetDeviceAddress }
+            if (isBtSessionGreetingConsumed(addr)) {
+                HiCarDiagnosticLog.d(
+                    "HiCarService",
+                    "BT greeting ($source) bỏ qua – đã phát phiên $addr"
+                )
+                pendingBtAutoGreeting = false
                 return
             }
         }
@@ -894,7 +1109,7 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
         }
 
         delayedRunnable = Runnable {
-            if (mediaPlayer?.isPlaying == true) {
+            if (isPlayingSafe() || preparing) {
                 Log.d("HiCarService", "scheduleDelayedGreeting: đang phát → bỏ qua")
                 return@Runnable
             }
@@ -944,7 +1159,7 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
                     cancelBootGreetingWatch()
                     return
                 }
-                if (mediaPlayer?.isPlaying == true) {
+                if (isPlayingSafe() || preparing) {
                     cancelBootGreetingWatch()
                     return
                 }
@@ -999,7 +1214,9 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
 
     private fun playAudio(path: String, type: String, focusAttempt: Int = 0, isBootAutoPlay: Boolean = false) {
         if (focusAttempt == 0) HiCarDiagnosticLog.d("HiCarAudio", "playAudio called: type=$type, path=$path, bootAuto=$isBootAutoPlay")
-        if (type == "greeting" && mediaPlayer?.isPlaying == true) {
+        // prepareAsync để lại một khoảng chưa isPlaying — dùng cờ `preparing` để lệnh trùng
+        // không mở thêm player thứ hai.
+        if (type == "greeting" && (isPlayingSafe() || preparing)) {
             HiCarDiagnosticLog.d("HiCarAudio", "playAudio: greeting đang phát → bỏ qua")
             return
         }
@@ -1028,7 +1245,13 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
         }
     }
 
-    private fun doPlayAudio(path: String, type: String, isBootAutoPlay: Boolean = false, hadFocus: Boolean = true) {
+    private fun doPlayAudio(
+        path: String,
+        type: String,
+        isBootAutoPlay: Boolean = false,
+        hadFocus: Boolean = true,
+        isRetry: Boolean = false
+    ) {
         loadPrefs()
         val isBoxBoot = isBootAutoPlay && connectionMode == "android_box_mode"
 
@@ -1038,147 +1261,294 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
             cancelBootCompletionFallback()
         }
 
+        cancelFocusResume()
+        cancelPlaybackWatchdog()
+        currentPath = path
+        currentType = type
+        currentIsBootAutoPlay = isBootAutoPlay
+        playbackDurationMs = 0L
+        focusRegainAttempts = 0
+        if (!isRetry) playbackRetryCount = 0
+
         try {
-            if (mediaPlayer == null) {
-                mediaPlayer = MediaPlayer()
-            } else {
-                mediaPlayer?.reset()
+            // MEDIA_ERROR_SERVER_DIED làm đối tượng MediaPlayer hỏng vĩnh viễn: reset() lần
+            // sau sẽ thất bại im lặng. Luôn dựng player mới thay vì tái sử dụng.
+            releasePlayer()
+            val player = MediaPlayer()
+            mediaPlayer = player
+            preparing = true
+
+            player.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build()
+            )
+            player.setWakeMode(applicationContext, PowerManager.PARTIAL_WAKE_LOCK)
+            player.setDataSource(path)
+            player.setVolume(1.0f, 1.0f)
+
+            player.setOnCompletionListener { onPlaybackCompleted(isBoxBoot) }
+            player.setOnErrorListener { _, what, extra ->
+                onPlaybackError(what, extra, isBoxBoot)
+                true
             }
+            player.setOnPreparedListener { onPlayerPrepared(it, type, isBoxBoot, hadFocus) }
 
-            mediaPlayer?.apply {
-                setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                        .build()
-                )
-                setDataSource(path)
-                setVolume(1.0f, 1.0f)
-
-                setOnCompletionListener {
-                    // Phát TRỌN VẸN tới cuối file = đã phát thật (audio focus chỉ mang tính
-                    // hợp tác — không có focus vẫn ra tiếng nếu pipeline hoạt động) → chốt
-                    // phiên boot + hủy alarm retry để KHÔNG phát lặp lần hai.
-                    // Trường hợp pipeline hỏng thật sẽ rơi vào onError/stall, không vào đây.
-                    if (isBoxBoot) {
-                        completeBootSessionIfNeeded("onCompletion")
-                    }
-                    if (isBoxBoot && bootPlaybackUsesBootFocus) {
-                        releaseBootAudioFocus()
-                        bootPlaybackUsesBootFocus = false
-                    } else if (!isBoxBoot) {
-                        releaseAudioFocus()
-                    }
-                    updatePlaybackState(PlaybackStateCompat.STATE_STOPPED)
-                    mediaPlayer?.release()
-                    mediaPlayer = null
-                }
-
-                setOnErrorListener { _, what, extra ->
-                    HiCarDiagnosticLog.e("HiCarAudio", "MediaPlayer error what=$what extra=$extra")
-                    if (isBoxBoot) {
-                        // Boot bị LỖI giữa chừng: marker "đã phát" + alarm retry có thể đã bị
-                        // hủy lúc start() → nếu không mở lại, boot này sẽ im lặng luôn.
-                        // Chỉ mở lại 1 lần/phiên để tránh loop lỗi vô hạn.
-                        val ctx = this@AudioForegroundService
-                        val sessionId = completingBootSessionId.takeIf { it > 0L }
-                            ?: resolveBootSessionId()
-                        if (sessionId > 0L &&
-                            !BootSessionManager.isSessionCompleted(ctx, sessionId) &&
-                            bootErrorRetryScheduledForSession != sessionId
-                        ) {
-                            bootErrorRetryScheduledForSession = sessionId
-                            bootGreetingHandled = false
-                            BootSessionManager.clearPlaybackStarted(ctx, sessionId)
-                            BootReceiver.scheduleBootRetryAlarms(ctx)
-                            HiCarDiagnosticLog.w(
-                                "HiCarService",
-                                "Boot playback error → mở lại alarm retry cho session $sessionId"
-                            )
-                        }
-                    }
-                    if (isBoxBoot && bootPlaybackUsesBootFocus) {
-                        releaseBootAudioFocus()
-                        bootPlaybackUsesBootFocus = false
-                    } else {
-                        releaseAudioFocus()
-                    }
-                    updatePlaybackState(PlaybackStateCompat.STATE_ERROR)
-                    OverlayBridge.notifyPlaybackComplete()
-                    true
-                }
-
-                prepare()
-                val durationMs = duration.toLong().coerceAtLeast(0L)
-
-                if (isBoxBoot) {
-                    completingBootSessionId = resolveBootSessionId()
-                    bootPlaybackDurationMs = durationMs
-                }
-
-                start()
-
-                if (type == "greeting") {
-                    if (isBoxBoot) {
-                        bootPlaybackStartedAtMs = SystemClock.elapsedRealtime()
-                        onBoxBootPlaybackStarted(completingBootSessionId, hadFocus)
-                        // Chỉ hẹn "chốt theo thời lượng đã phát" khi phát thật (có focus).
-                        if (hadFocus) scheduleBootCompletionFallback(durationMs)
-                        if (hadFocus) {
-                            HiCarDiagnosticLog.d(
-                                "HiCarService",
-                                "Box boot greeting started (focus granted) → chờ onCompletion/fallback"
-                            )
-                        } else {
-                            HiCarDiagnosticLog.d(
-                                "HiCarService",
-                                "Box boot greeting started best-effort → chờ onCompletion/fallback"
-                            )
-                        }
-                    }
-                    if (connectionMode == "phone_android_auto" && pendingAaAutoGreeting) {
-                        aaGreetingPlayedThisConnection = true
-                        pendingAaAutoGreeting = false
-                        Log.d("HiCarAA", "AA auto-greeting started → session flag set")
-                    }
-                }
-
-                HiCarDiagnosticLog.d("HiCarAudio", "playAudio OK: type=$type started")
-                if (type == "greeting") {
-                    updatePlaybackState(PlaybackStateCompat.STATE_PLAYING)
-                } else if (type == "goodbye") {
-                    updatePlaybackState(PlaybackStateCompat.STATE_SKIPPING_TO_NEXT)
-                }
-
-                HiCarPlugin.instance?.invokeServiceMethod("onPlaybackStarted", type)
-                OverlayBridge.notifyPlaybackStarted(type)
-            }
+            // prepare() đồng bộ chặn main thread — box yếu dễ ANR. Dùng prepareAsync.
+            player.prepareAsync()
         } catch (e: Exception) {
+            preparing = false
             HiCarDiagnosticLog.e("HiCarAudio", "Error playing audio: ${e.message}")
-            if (isBoxBoot && bootPlaybackUsesBootFocus) {
-                releaseBootAudioFocus()
-                bootPlaybackUsesBootFocus = false
-            } else {
-                releaseAudioFocus()
-            }
-            updatePlaybackState(PlaybackStateCompat.STATE_ERROR)
-            OverlayBridge.notifyPlaybackComplete()
+            onPlaybackError(-1, -1, isBoxBoot)
         }
+    }
+
+    private fun onPlayerPrepared(player: MediaPlayer, type: String, isBoxBoot: Boolean, hadFocus: Boolean) {
+        preparing = false
+        try {
+            val durationMs = player.duration.toLong().coerceAtLeast(0L)
+            playbackDurationMs = durationMs
+
+            if (isBoxBoot) {
+                completingBootSessionId = resolveBootSessionId()
+                bootPlaybackDurationMs = durationMs
+            }
+
+            player.start()
+
+            if (type == "greeting") {
+                if (isBoxBoot) {
+                    bootPlaybackStartedAtMs = SystemClock.elapsedRealtime()
+                    onBoxBootPlaybackStarted(completingBootSessionId, hadFocus)
+                    // Chỉ hẹn "chốt theo thời lượng đã phát" khi phát thật (có focus).
+                    if (hadFocus) {
+                        scheduleBootCompletionFallback(durationMs)
+                        HiCarDiagnosticLog.d(
+                            "HiCarService",
+                            "Box boot greeting started (focus granted) → chờ onCompletion/fallback"
+                        )
+                    } else {
+                        HiCarDiagnosticLog.d(
+                            "HiCarService",
+                            "Box boot greeting started best-effort → chờ onCompletion/fallback"
+                        )
+                    }
+                }
+                if (connectionMode == "phone_android_auto" && pendingAaAutoGreeting) {
+                    aaGreetingPlayedThisConnection = true
+                    pendingAaAutoGreeting = false
+                    Log.d("HiCarAA", "AA auto-greeting started → session flag set")
+                }
+                if (connectionMode == "phone_bluetooth" && pendingBtAutoGreeting) {
+                    val addr = btA2dpWatchAddress.ifEmpty { targetDeviceAddress }
+                    markBtSessionGreetingPlayed(addr)
+                }
+            }
+
+            HiCarDiagnosticLog.d("HiCarAudio", "playAudio OK: type=$type started (duration=${durationMs}ms)")
+            if (type == "greeting") {
+                updatePlaybackState(PlaybackStateCompat.STATE_PLAYING)
+            } else if (type == "goodbye") {
+                updatePlaybackState(PlaybackStateCompat.STATE_SKIPPING_TO_NEXT)
+            }
+
+            startPlaybackWatchdog()
+            HiCarPlugin.instance?.invokeServiceMethod("onPlaybackStarted", type)
+            OverlayBridge.notifyPlaybackStarted(type)
+        } catch (e: Exception) {
+            HiCarDiagnosticLog.e("HiCarAudio", "start() thất bại: ${e.message}")
+            onPlaybackError(-1, -2, isBoxBoot)
+        }
+    }
+
+    private fun onPlaybackCompleted(isBoxBoot: Boolean) {
+        // Phát TRỌN VẸN tới cuối file = đã phát thật (audio focus chỉ mang tính hợp tác —
+        // không có focus vẫn ra tiếng nếu pipeline hoạt động) → chốt phiên boot + hủy alarm
+        // retry để KHÔNG phát lặp lần hai.
+        cancelPlaybackWatchdog()
+        cancelFocusResume()
+        playbackRetryCount = 0
+        clearCurrentPlayback()
+
+        if (isBoxBoot) {
+            completeBootSessionIfNeeded("onCompletion")
+        }
+        if (isBoxBoot && bootPlaybackUsesBootFocus) {
+            releaseBootAudioFocus()
+            bootPlaybackUsesBootFocus = false
+        } else if (!isBoxBoot) {
+            releaseAudioFocus()
+        }
+        updatePlaybackState(PlaybackStateCompat.STATE_STOPPED)
+        releasePlayer()
+    }
+
+    /**
+     * Lỗi MediaPlayer KHÔNG còn là điểm cuối: dựng player mới và phát lại (tối đa
+     * [MAX_PLAYBACK_RETRIES] lần). Trước đây chỉ luồng boot Box mới có đường phục hồi, nên trên
+     * màn độ một lần lỗi là câm cho tới khi mở lại app.
+     */
+    private fun onPlaybackError(what: Int, extra: Int, isBoxBoot: Boolean) {
+        preparing = false
+        cancelPlaybackWatchdog()
+        cancelFocusResume()
+        HiCarDiagnosticLog.e("HiCarAudio", "MediaPlayer error what=$what extra=$extra (type=$currentType)")
+
+        if (isBoxBoot) {
+            // Boot bị LỖI giữa chừng: marker "đã phát" + alarm retry có thể đã bị hủy lúc
+            // start() → nếu không mở lại, boot này sẽ im lặng luôn.
+            // Chỉ mở lại 1 lần/phiên để tránh loop lỗi vô hạn.
+            val ctx = this@AudioForegroundService
+            val sessionId = completingBootSessionId.takeIf { it > 0L } ?: resolveBootSessionId()
+            if (sessionId > 0L &&
+                !BootSessionManager.isSessionCompleted(ctx, sessionId) &&
+                bootErrorRetryScheduledForSession != sessionId
+            ) {
+                bootErrorRetryScheduledForSession = sessionId
+                bootGreetingHandled = false
+                BootSessionManager.clearPlaybackStarted(ctx, sessionId)
+                BootReceiver.scheduleBootRetryAlarms(ctx)
+                HiCarDiagnosticLog.w(
+                    "HiCarService",
+                    "Boot playback error → mở lại alarm retry cho session $sessionId"
+                )
+            }
+        }
+
+        if (retryPlayback("error_${what}_$extra")) return
+
+        if (isBoxBoot && bootPlaybackUsesBootFocus) {
+            releaseBootAudioFocus()
+            bootPlaybackUsesBootFocus = false
+        } else {
+            releaseAudioFocus()
+        }
+        updatePlaybackState(PlaybackStateCompat.STATE_ERROR)
+        OverlayBridge.notifyPlaybackComplete()
+    }
+
+    /** Phát lại clip hiện tại bằng player mới. Trả về false khi hết lượt / không còn clip. */
+    private fun retryPlayback(reason: String): Boolean {
+        val path = currentPath
+        val type = currentType
+        val isBootAuto = currentIsBootAutoPlay
+        if (path.isEmpty()) return false
+        if (playbackRetryCount >= MAX_PLAYBACK_RETRIES) {
+            HiCarDiagnosticLog.e(
+                "HiCarAudio",
+                "Hết lượt phát lại ($reason) sau $playbackRetryCount lần → bỏ cuộc"
+            )
+            clearCurrentPlayback()
+            releasePlayer()
+            return false
+        }
+        playbackRetryCount++
+        HiCarDiagnosticLog.w(
+            "HiCarAudio",
+            "Phát lại lần $playbackRetryCount/$MAX_PLAYBACK_RETRIES ($reason)"
+        )
+        releasePlayer()
+        handler.postDelayed({
+            if (currentPath != path) return@postDelayed
+            val isBoxBoot = isBootAuto && connectionMode == "android_box_mode"
+            val granted = if (isBoxBoot) requestBootAudioFocus() else requestAudioFocus()
+            if (isBoxBoot) bootPlaybackUsesBootFocus = granted
+            doPlayAudio(path, type, isBootAuto, hadFocus = granted, isRetry = true)
+        }, PLAYBACK_RETRY_DELAY_MS)
+        return true
+    }
+
+    /**
+     * Canh chừng playback thật sự còn chạy. Trên màn độ, audio hay bị cắt câm mà MediaPlayer
+     * không báo lỗi nào (đổi route, HAL treo) — chỉ nhìn `isPlaying`/`currentPosition` mới biết.
+     */
+    private fun startPlaybackWatchdog() {
+        cancelPlaybackWatchdog()
+        // Không biết thời lượng thì không thể phân biệt "hết bài" với "chết giữa chừng".
+        if (playbackDurationMs <= 0L) return
+        playbackWatchdogRunnable = object : Runnable {
+            override fun run() {
+                if (currentPath.isEmpty() || mediaPlayer == null) return
+                val position = currentPositionSafe()
+                val playedEnough = playbackDurationMs > 0L &&
+                    position >= (playbackDurationMs * PLAYED_ENOUGH_RATIO).toLong()
+
+                // Đang tạm dừng chờ trả lại focus thì chưa coi là chết.
+                if (!isPlayingSafe() && !playedEnough && focusResumeRunnable == null) {
+                    HiCarDiagnosticLog.w(
+                        "HiCarAudio",
+                        "Playback tắt giữa chừng tại ${position}ms/${playbackDurationMs}ms → phát lại"
+                    )
+                    if (!retryPlayback("stalled")) {
+                        updatePlaybackState(PlaybackStateCompat.STATE_ERROR)
+                        OverlayBridge.notifyPlaybackComplete()
+                    }
+                    return
+                }
+                handler.postDelayed(this, PLAYBACK_WATCH_INTERVAL_MS)
+            }
+        }
+        handler.postDelayed(playbackWatchdogRunnable!!, PLAYBACK_WATCH_INTERVAL_MS)
+    }
+
+    private fun cancelPlaybackWatchdog() {
+        playbackWatchdogRunnable?.let { handler.removeCallbacks(it) }
+        playbackWatchdogRunnable = null
+    }
+
+    private fun clearCurrentPlayback() {
+        currentPath = ""
+        currentType = ""
+        currentIsBootAutoPlay = false
+        playbackDurationMs = 0L
+        focusRegainAttempts = 0
+    }
+
+    private fun releasePlayer() {
+        preparing = false
+        val player = mediaPlayer ?: return
+        mediaPlayer = null
+        try {
+            player.setOnErrorListener(null)
+            player.setOnCompletionListener(null)
+            player.setOnPreparedListener(null)
+        } catch (_: Exception) {}
+        // Gọi release() ngay bên trong callback của chính MediaPlayer có thể treo trên một số
+        // HAL — đẩy sang vòng lặp message kế tiếp.
+        handler.post {
+            try { if (player.isPlaying) player.stop() } catch (_: Exception) {}
+            try { player.reset() } catch (_: Exception) {}
+            try { player.release() } catch (_: Exception) {}
+        }
+    }
+
+    private fun isPlayingSafe(): Boolean = try {
+        mediaPlayer?.isPlaying == true
+    } catch (_: Exception) {
+        false
+    }
+
+    private fun currentPositionSafe(): Long = try {
+        mediaPlayer?.currentPosition?.toLong() ?: 0L
+    } catch (_: Exception) {
+        0L
     }
 
     private fun stopPlayback(releaseOnly: Boolean = false) {
         maybeCompleteBootSessionOnInterrupt()
         cancelBootCompletionFallback()
         cancelDelayedPlay()
+        cancelPlaybackWatchdog()
+        cancelFocusResume()
         pendingAaAutoGreeting = false
-        mediaPlayer?.let {
-            try {
-                if (it.isPlaying) it.stop()
-                it.reset()
-                it.release()
-            } catch (_: Exception) {}
-        }
-        mediaPlayer = null
+        HiCarDiagnosticLog.d(
+            "HiCarAudio",
+            "stopPlayback: type=$currentType, pos=${currentPositionSafe()}ms/${playbackDurationMs}ms, releaseOnly=$releaseOnly"
+        )
+        playbackRetryCount = 0
+        clearCurrentPlayback()
+        releasePlayer()
         if (!releaseOnly) {
             if (bootPlaybackUsesBootFocus) {
                 releaseBootAudioFocus()
@@ -1205,25 +1575,112 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
                         .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                         .build()
                 )
-                .setOnAudioFocusChangeListener { change ->
-                    when (change) {
-                        AudioManager.AUDIOFOCUS_LOSS -> {
-                            Log.d("HiCarAudio", "Focus Loss (-1)")
-                            stopPlayback()
-                        }
-                        AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-                            Log.d("HiCarAudio", "Focus Loss Transient (-2)")
-                            mediaPlayer?.pause()
-                        }
-                        AudioManager.AUDIOFOCUS_GAIN -> {
-                            Log.d("HiCarAudio", "Focus Gain (1)")
-                            mediaPlayer?.start()
-                        }
-                    }
-                }
+                .setOnAudioFocusChangeListener { change -> handleFocusChange(change, isBootFocus = false) }
                 .build()
         }
     }
+
+    /**
+     * Audio focus chỉ là giao kèo HỢP TÁC: mất focus không có nghĩa là loa đã tắt.
+     *
+     * Trên màn độ / box, app radio-launcher của chính máy thường tự chạy vài giây sau khi khởi
+     * động và cướp focus. Nếu ta dừng hẳn thì lời chào mới phát 2–3 giây đã tịt và không bao giờ
+     * quay lại. Lời chào là clip ngắn một lần nên ta giành lại focus và phát tiếp; chỉ nhường
+     * khi clip đã gần xong hoặc đã giành quá số lần cho phép.
+     */
+    private fun handleFocusChange(change: Int, isBootFocus: Boolean) {
+        val tag = if (isBootFocus) "Boot focus" else "Focus"
+        when (change) {
+            AudioManager.AUDIOFOCUS_LOSS -> {
+                HiCarDiagnosticLog.w(
+                    "HiCarAudio",
+                    "$tag LOSS (-1) tại ${currentPositionSafe()}ms/${playbackDurationMs}ms (type=$currentType)"
+                )
+                if (!tryKeepPlayingAfterFocusLoss(isBootFocus)) {
+                    if (isBootFocus) maybeCompleteBootSessionOnInterrupt()
+                    stopPlayback()
+                }
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                HiCarDiagnosticLog.w(
+                    "HiCarAudio",
+                    "$tag LOSS_TRANSIENT (-2) tại ${currentPositionSafe()}ms → tạm dừng, hẹn resume"
+                )
+                try { if (isPlayingSafe()) mediaPlayer?.pause() } catch (_: Exception) {}
+                scheduleFocusResume()
+            }
+            AudioManager.AUDIOFOCUS_GAIN -> {
+                HiCarDiagnosticLog.d("HiCarAudio", "$tag GAIN (1) → phát tiếp")
+                cancelFocusResume()
+                resumeAfterFocus()
+            }
+        }
+    }
+
+    /** true nếu đã xử lý xong mà KHÔNG cần dừng playback. */
+    private fun tryKeepPlayingAfterFocusLoss(isBootFocus: Boolean): Boolean {
+        if (currentPath.isEmpty()) return false
+        if (hasPlayedEnough()) {
+            HiCarDiagnosticLog.d("HiCarAudio", "Mất focus khi clip đã gần xong → dừng bình thường")
+            return false
+        }
+        if (focusRegainAttempts >= MAX_FOCUS_REGAIN_ATTEMPTS) {
+            HiCarDiagnosticLog.w("HiCarAudio", "Đã giành focus $focusRegainAttempts lần → nhường")
+            return false
+        }
+        focusRegainAttempts++
+        // Xin focus ngay bên trong onAudioFocusChange là gọi đệ quy vào AudioManager — một số
+        // ROM xử lý sai. Đẩy sang vòng lặp message kế tiếp.
+        handler.post {
+            if (currentPath.isEmpty()) return@post
+            val regained = if (isBootFocus) requestBootAudioFocus() else requestAudioFocus()
+            HiCarDiagnosticLog.w(
+                "HiCarAudio",
+                "Giành lại focus lần $focusRegainAttempts granted=$regained → tiếp tục phát"
+            )
+            if (!isPlayingSafe()) resumeAfterFocus()
+        }
+        return true
+    }
+
+    /**
+     * Nhiều màn độ cướp focus rồi không bao giờ trả lại. Quá hạn thì phát tiếp best-effort —
+     * không có focus vẫn ra tiếng nếu đường audio còn sống.
+     */
+    private fun scheduleFocusResume() {
+        cancelFocusResume()
+        if (currentPath.isEmpty() || hasPlayedEnough()) return
+        focusResumeRunnable = Runnable {
+            focusResumeRunnable = null
+            if (currentPath.isEmpty() || isPlayingSafe()) return@Runnable
+            HiCarDiagnosticLog.w(
+                "HiCarAudio",
+                "Không được trả lại focus sau ${FOCUS_RESUME_TIMEOUT_MS}ms → phát tiếp best-effort"
+            )
+            resumeAfterFocus()
+        }
+        handler.postDelayed(focusResumeRunnable!!, FOCUS_RESUME_TIMEOUT_MS)
+    }
+
+    private fun cancelFocusResume() {
+        focusResumeRunnable?.let { handler.removeCallbacks(it) }
+        focusResumeRunnable = null
+    }
+
+    private fun resumeAfterFocus() {
+        if (currentPath.isEmpty() || isPlayingSafe()) return
+        try {
+            mediaPlayer?.start()
+            HiCarDiagnosticLog.d("HiCarAudio", "Resume OK tại ${currentPositionSafe()}ms")
+        } catch (e: Exception) {
+            HiCarDiagnosticLog.e("HiCarAudio", "Resume thất bại (${e.message}) → phát lại từ đầu")
+            retryPlayback("resume_failed")
+        }
+    }
+
+    private fun hasPlayedEnough(): Boolean =
+        playbackDurationMs > 0L &&
+            currentPositionSafe() >= (playbackDurationMs * PLAYED_ENOUGH_RATIO).toLong()
 
     /** Audio focus riêng cho Box boot greeting (GAIN, không ảnh hưởng BT/AA). */
     private fun buildBootAudioFocusRequest() {
@@ -1238,21 +1695,7 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
                 .setOnAudioFocusChangeListener { change ->
                     loadPrefs()
                     if (connectionMode != "android_box_mode" || completingBootSessionId <= 0L) return@setOnAudioFocusChangeListener
-                    when (change) {
-                        AudioManager.AUDIOFOCUS_LOSS -> {
-                            Log.d("HiCarAudio", "Boot focus Loss (-1)")
-                            maybeCompleteBootSessionOnInterrupt()
-                            stopPlayback(releaseOnly = false)
-                        }
-                        AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-                            Log.d("HiCarAudio", "Boot focus Loss Transient (-2)")
-                            mediaPlayer?.pause()
-                        }
-                        AudioManager.AUDIOFOCUS_GAIN -> {
-                            Log.d("HiCarAudio", "Boot focus Gain (1)")
-                            mediaPlayer?.start()
-                        }
-                    }
+                    handleFocusChange(change, isBootFocus = true)
                 }
                 .build()
         }

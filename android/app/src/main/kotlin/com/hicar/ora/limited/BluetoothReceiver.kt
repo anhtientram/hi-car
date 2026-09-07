@@ -295,8 +295,7 @@ class BluetoothReceiver : BroadcastReceiver() {
 
         when (intent.action) {
             BluetoothDevice.ACTION_ACL_CONNECTED -> {
-                Log.d("HiCar", "ACL Connected: $deviceAddress")
-                Log.d("HiCar", "Conditions: autoPlayEnabled=$autoPlayEnabled, mode=$connectionMode, target=$targetAddress")
+                HiCarDiagnosticLog.d("HiCarBT", "ACL Connected: $deviceAddress mode=$connectionMode target=$targetAddress autoPlay=$autoPlayEnabled")
                 
                 if (autoPlayEnabled) {
                     if (connectionMode == "phone_android_auto") {
@@ -329,6 +328,7 @@ class BluetoothReceiver : BroadcastReceiver() {
                 }
             }
             BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
+                HiCarDiagnosticLog.d("HiCarBT", "ACL Disconnected: $deviceAddress mode=$connectionMode")
                 // AA không dây: BT handshake có thể ngắt/nối lại TRƯỚC khi projection xong → không dừng nhạc
                 // theo BT. Chỉ dừng khi CarConnection=0 (service). Bluetooth mode: dừng đúng xe mục tiêu.
                 val shouldStop = connectionMode == "phone_bluetooth" &&

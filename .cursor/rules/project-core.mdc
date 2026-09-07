@@ -1,0 +1,21 @@
+---
+description: Core stack, architecture, and coding standards for Giọng Thương Gia
+alwaysApply: true
+---
+
+# Project core
+
+- Flutter + Provider + go_router + ScreenUtil; Android native = Kotlin.
+- Package `com.hicar.ora.limited`. Title: **Giọng Thương Gia**.
+- Flutter = UI / API / config / state. Playback keep-alive / boot / BT / AA = **native**.
+- Do not put business logic in widgets; use providers + services + repositories.
+- Colors: cyan `#00E5FF`, black `#000000` — premium automotive dark.
+- ScreenUtil: sizes via `.w` / `.h` / `.sp` / `.r` — no hardcoded px.
+- Index: `AGENTS.md`. File map: `docs/ARCHITECTURE.md`.
+
+## Hard constraints
+
+- Overlay entry `overlayMain` stays in `lib/main.dart` (same library as `main`).
+- One owner per auto-play event (Flutter **or** native) — never both.
+- Prefer device-agnostic fixes; head units vary (cheap HAL, aggressive radio apps).
+- Diagnostic events → `HiCarDiagnosticLog`, not only `Log.d`.

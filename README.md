@@ -1,16 +1,27 @@
-# hi_car
+# Giọng Thương Gia (hi_car)
 
-A new Flutter project.
+Flutter + Kotlin — lời chào / tạm biệt xe tự động (Bluetooth, Android Auto, màn độ, Android Box).
 
-## Getting Started
+## Tài liệu cho agent & dev
 
-This project is a starting point for a Flutter application.
+**Bắt đầu tại [`AGENTS.md`](AGENTS.md)** — mục lục rules, skills, workflows, changelog, bản đồ file.
 
-A few resources to get you started if this is your first Flutter project:
+| | |
+|--|--|
+| Kiến trúc / path code | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
+| Cursor rules | [`.cursor/rules/`](.cursor/rules/) |
+| Cursor skills | [`.cursor/skills/`](.cursor/skills/) |
+| Nghiệp vụ `.agents` | [`.agents/README.md`](.agents/README.md) |
+| Hướng dẫn dùng | [`docs/HUONG_DAN_SU_DUNG.md`](docs/HUONG_DAN_SU_DUNG.md) |
+| API | [`api.md`](api.md) |
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+## Dev nhanh
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```bash
+flutter pub get
+flutter run
+# hoặc
+flutter build apk --debug
+```
+
+Package: `com.hicar.ora.limited`

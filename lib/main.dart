@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:isolate';
 import 'dart:ui';
 import 'package:flutter/material.dart';
@@ -148,6 +149,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _stopOverlayWatchdog();
     _audioProvider.removeListener(_updateOverlayState);
     IsolateNameServer.removePortNameMapping('overlay_action_port');
     WidgetsBinding.instance.removeObserver(this);
@@ -157,12 +159,53 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   // 🟢 Đánh dấu app từng bị đẩy xuống nền, để phân biệt "mở lại app" với lần khởi động đầu.
   bool _wasPaused = false;
 
+  // 🟢 Watchdog giữ nút nổi luôn hiển thị khi app ở nền.
+  //    Một số app full-screen (YouTube xem video / fullscreen, launcher xe...) khiến hệ thống
+  //    GỠ cửa sổ overlay của app khác. Trước đây overlay chỉ được showOverlay() đúng MỘT lần
+  //    lúc chuyển sang nền → khi bị gỡ thì mất luôn (không có gì hiện lại). Timer này định kỳ
+  //    kiểm tra: nếu app còn ở nền, bubble đang bật mà overlay đã mất → tự hiện lại.
+  Timer? _overlayWatchdog;
+  // 🟢 Chống chồng lệnh: nếu một lần hiện lại overlay còn đang chạy (head unit yếu, chậm),
+  //    tick kế tiếp sẽ BỎ QUA thay vì gọi showOverlay() chồng lên.
+  bool _overlayReshowInFlight = false;
+  static const Duration _overlayWatchdogInterval = Duration(seconds: 2);
+
+  void _startOverlayWatchdog() {
+    _overlayWatchdog?.cancel();
+    _overlayReshowInFlight = false;
+    _overlayWatchdog = Timer.periodic(_overlayWatchdogInterval, (_) async {
+      // Watchdog CHỈ giữ cửa sổ nút nổi — tuyệt đối không đụng tới phát nhạc.
+      // (Việc phát lại lời chào nằm ở nhánh resumed / _maybePlayGreetingOnResume.)
+      if (!_overlayProvider.isBubbleEnabled) return;
+      if (_overlayReshowInFlight) return;
+      _overlayReshowInFlight = true;
+      try {
+        final active = await FlutterOverlayWindow.isActive();
+        if (!active) {
+          debugPrint('Main: Overlay watchdog → nút nổi bị gỡ, hiện lại');
+          await _overlayProvider.showOverlay();
+          _updateOverlayState();
+        }
+      } catch (_) {
+      } finally {
+        _overlayReshowInFlight = false;
+      }
+    });
+  }
+
+  void _stopOverlayWatchdog() {
+    _overlayWatchdog?.cancel();
+    _overlayWatchdog = null;
+    _overlayReshowInFlight = false;
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // 🟢 CHỈ ẩn overlay khi app THỰC SỰ ra tiền cảnh (resumed). Không ẩn ở 'inactive'
     //    vì trạng thái này xảy ra thoáng qua (kéo thanh thông báo, dialog hệ thống,
     //    đang chuyển cảnh...) khiến nút nổi bị tắt sớm/giật và đóng/mở liên tục.
     if (state == AppLifecycleState.resumed) {
+      _stopOverlayWatchdog();
       _overlayProvider.hideOverlay();
       ServiceChannel.instance.importNativeDiagnostics().catchError((_) {});
 
@@ -178,6 +221,8 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       _overlayProvider.showOverlay().then((_) {
         _updateOverlayState();
       });
+      // 🟢 Giữ nút nổi hiển thị suốt khi ở nền (chống YouTube fullscreen gỡ overlay).
+      _startOverlayWatchdog();
     }
   }
 

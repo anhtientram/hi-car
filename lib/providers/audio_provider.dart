@@ -61,9 +61,25 @@ class AudioProvider extends ChangeNotifier {
     );
   }
 
+  AudioModel _buildDefaultGreetingAudio() {
+    return AudioModel(
+      id: AppConstants.defaultGreetingId,
+      title: 'Lời chào mặc định',
+      type: AudioType.custom,
+      remoteUrl: '',
+      assetPath: AppConstants.defaultAudioAsset,
+      description: 'Có sẵn trong app (không cần mạng)',
+      isActiveGreeting: _activeGreetingId == AppConstants.defaultGreetingId,
+      isActiveGoodbye: false,
+    );
+  }
+
   List<AudioModel> get audioList {
-    final mappedList =
-        _audioList.where((a) => a.id != AppConstants.defaultGoodbyeId).map((a) {
+    final mappedList = _audioList
+        .where((a) =>
+            a.id != AppConstants.defaultGoodbyeId &&
+            a.id != AppConstants.defaultGreetingId)
+        .map((a) {
       return a.copyWith(
         isActiveGreeting: _activeGreetingId == a.id,
         isActiveGoodbye: _effectiveGoodbyeId == a.id,
@@ -72,20 +88,15 @@ class AudioProvider extends ChangeNotifier {
 
     final defaultGoodbye = _buildDefaultGoodbyeAudio();
 
+    // Lời chào mặc định chỉ hiện khi bật Demo (Beta). Fallback phát khi mất mạng
+    // vẫn dùng bản dựng sẵn ngầm (playGreetingViaNative / _syncNativePaths).
     if (!_isBetaMode) return [defaultGoodbye, ...mappedList];
 
-    final demoAudio = AudioModel(
-      id: 'demo_default',
-      title: 'Giọng Mặc Định (Demo)',
-      type: AudioType.custom,
-      remoteUrl: '',
-      assetPath: AppConstants.defaultAudioAsset,
-      description: 'Lấy từ bộ nhớ máy (Không cần mạng)',
-      isActiveGreeting: _activeGreetingId == 'demo_default',
-      isActiveGoodbye: false,
-    );
-
-    return [demoAudio, defaultGoodbye, ...mappedList];
+    return [
+      _buildDefaultGreetingAudio(),
+      defaultGoodbye,
+      ...mappedList,
+    ];
   }
 
   AudioModel? get currentlyPlaying => _currentlyPlaying;
@@ -420,11 +431,21 @@ class AudioProvider extends ChangeNotifier {
 
     if (audio != null) {
       path = await AudioRepository.instance.getGreetingAudioPath(audio);
-    } else {
+    }
+
+    if (path == null || path.isEmpty) {
       final prefs = await SharedPreferences.getInstance();
-      path = prefs.getString('greeting_audio_path');
-      debugPrint(
-          'AudioProvider: No active greeting in list, fallback path=$path');
+      final saved = prefs.getString('greeting_audio_path');
+      if (await SyncService.instance.isValidAudioFile(saved)) path = saved;
+      debugPrint('AudioProvider: greeting fallback path=$path');
+    }
+
+    // Đã cấu hình lời chào nhưng file chưa về được (máy mới cài / mất mạng / file hỏng):
+    // phát bản dựng sẵn còn hơn im lặng.
+    if ((path == null || path.isEmpty) &&
+        (_activeGreetingId?.isNotEmpty ?? false)) {
+      path = await AudioRepository.instance.prepareBundledGreetingPath();
+      debugPrint('AudioProvider: dùng lời chào dựng sẵn, path=$path');
     }
 
     if (path == null || path.isEmpty) {
@@ -661,8 +682,15 @@ class AudioProvider extends ChangeNotifier {
   // ===== Lifecycle =====
 
   Future<void> _syncNativePaths() async {
-    final greetingSource =
+    var greetingSource =
         await AudioRepository.instance.getGreetingAudioPath(activeGreeting);
+    // Đã chọn lời chào nhưng file chưa tải về / hỏng → ghim bản dựng sẵn để native (kể cả
+    // luồng boot khi app chưa mở) luôn có file hợp lệ để phát.
+    if ((greetingSource == null || greetingSource.isEmpty) &&
+        (_activeGreetingId?.isNotEmpty ?? false)) {
+      greetingSource =
+          await AudioRepository.instance.prepareBundledGreetingPath();
+    }
     final goodbyeSource =
         await AudioRepository.instance.getGoodbyeAudioPath(activeGoodbye);
 

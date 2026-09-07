@@ -85,12 +85,15 @@ class SyncService {
             _localPathFor(audioModel.id, audioModel.hash, audioDir.path),
             '${audioDir.path}/${audioModel.id}.mp3',
           };
+          // Kiểm tra tính hợp lệ chứ không chỉ sự tồn tại: một file cụt từ lần tải hỏng
+          // trước đó sẽ mãi mãi được "giữ lại" nếu chỉ hỏi exists().
           for (final candidate in candidates) {
-            if (await File(candidate).exists()) {
+            if (await isValidAudioFile(candidate)) {
               localPath = candidate;
               needsDownload = false;
               break;
             }
+            await _safeDelete(candidate);
           }
         }
 
@@ -143,6 +146,34 @@ class SyncService {
     }
   }
 
+  /// Kích thước tối thiểu để coi là một file nhạc thật (loại file cụt / trang lỗi HTML).
+  static const int _minValidAudioBytes = 8 * 1024;
+
+  /// Kiểm tra file có phải MP3 còn nguyên vẹn ở mức tối thiểu hay không.
+  ///
+  /// Chỉ soi kích thước + chữ ký đầu file ("ID3" hoặc frame sync 0xFF Ex). Không giải mã
+  /// toàn bộ vì hàm này chạy trên mọi lần sync và mọi lần phát.
+  Future<bool> isValidAudioFile(String? path) async {
+    if (path == null || path.isEmpty) return false;
+    try {
+      final file = File(path);
+      if (!await file.exists()) return false;
+      if (await file.length() < _minValidAudioBytes) return false;
+
+      final head = <int>[];
+      await for (final chunk in file.openRead(0, 3)) {
+        head.addAll(chunk);
+      }
+      if (head.length < 3) return false;
+
+      final isId3 = head[0] == 0x49 && head[1] == 0x44 && head[2] == 0x33;
+      final isFrameSync = head[0] == 0xFF && (head[1] & 0xE0) == 0xE0;
+      return isId3 || isFrameSync;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<String?> _downloadFile({
     required String audioId,
     required String url,
@@ -150,28 +181,48 @@ class SyncService {
     String? contentHash,
   }) async {
     final destPath = _localPathFor(audioId, contentHash, audioDir.path);
+    // Mạng của màn/box hay đứt giữa chừng. Ghi thẳng vào tên đích sẽ để lại file mp3 cụt:
+    // MediaPlayer.prepare() vẫn qua, phát được vài giây rồi chết. Tệ hơn, luật "hash không đổi
+    // và file tồn tại thì bỏ qua tải" khiến file hỏng nằm lại vĩnh viễn trên máy đó.
+    // → Tải vào .part, xác thực xong mới đổi tên sang tên thật.
+    final tempPath = '$destPath.part';
     // ignore: avoid_print
     print('📥 ĐANG TẢI FILE: $url -> $destPath');
 
     try {
+      await _safeDelete(tempPath);
+
       if (url.startsWith('mock://')) {
         // Handle mock fallback for demo
-        final byteData =
-            await rootBundle.load('assets/audio/audio_default.MP3');
-        final file = File(destPath);
+        final byteData = await rootBundle.load(AppConstants.defaultAudioAsset);
+        final file = File(tempPath);
         await file.writeAsBytes(byteData.buffer.asUint8List(), flush: true);
       } else {
         // Real HTTP Download
         await _dio.download(
           url,
-          destPath,
+          tempPath,
           options: Options(
             headers: {'Accept': 'application/json'},
           ),
         );
       }
+
+      if (!await isValidAudioFile(tempPath)) {
+        await _safeDelete(tempPath);
+        AppLogger.instance.log(
+          'File tải về không hợp lệ (cụt hoặc không phải MP3): $url',
+          type: 'download_error',
+          details: {'url': url, 'audioId': audioId},
+        );
+        return null;
+      }
+
+      await _safeDelete(destPath);
+      await File(tempPath).rename(destPath);
       return destPath;
     } catch (e) {
+      await _safeDelete(tempPath);
       print('Download error: $e');
       AppLogger.instance.log(
         'Lỗi tải file: $url',
@@ -180,6 +231,13 @@ class SyncService {
       );
       return null;
     }
+  }
+
+  Future<void> _safeDelete(String path) async {
+    try {
+      final file = File(path);
+      if (await file.exists()) await file.delete();
+    } catch (_) {}
   }
 
   /// Downloads and caches a single audio file (e.g. from studio).
@@ -195,10 +253,10 @@ class SyncService {
     );
   }
 
-  /// Checks if a file exists on disk.
+  /// Checks if a file exists on disk and is a usable audio file.
   Future<bool> fileExists(String? path) async {
     if (path == null) return false;
-    return File(path).exists();
+    return isValidAudioFile(path);
   }
 
   String _localPathFor(String audioId, String? hash, String dirPath) {
@@ -220,7 +278,7 @@ class SyncService {
       '${audioDir.path}/${audio.id}.mp3',
     };
     for (final candidate in candidates) {
-      if (await File(candidate).exists()) return candidate;
+      if (await isValidAudioFile(candidate)) return candidate;
     }
     return null;
   }

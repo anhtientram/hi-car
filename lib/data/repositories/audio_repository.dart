@@ -160,15 +160,28 @@ class AudioRepository {
     required String destFileName,
   }) async {
     if (sourcePath == null || sourcePath.isEmpty) return null;
+    // Không ghim file hỏng: active_*.mp3 còn được nhân bản tiếp sang boot_*.mp3 ở vùng
+    // device-protected, nên một file cụt sẽ làm hỏng cả luồng phát lúc khởi động.
+    if (!await SyncService.instance.isValidAudioFile(sourcePath)) return null;
     final source = File(sourcePath);
-    if (!await source.exists()) return null;
 
     final audioDir = await SyncService.instance.getAudioDir();
     final dest = File('${audioDir.path}/$destFileName');
     if (source.path == dest.path) return dest.path;
 
-    await source.copy(dest.path);
+    // Ghi qua file tạm rồi đổi tên: nếu bị ngắt giữa chừng thì bản đang dùng vẫn nguyên vẹn,
+    // và không bao giờ ghi đè lên file mà MediaPlayer đang đọc dở.
+    final temp = File('${dest.path}.tmp');
+    await source.copy(temp.path);
+    await temp.rename(dest.path);
     return dest.path;
+  }
+
+  /// Lời chào dự phòng dựng sẵn trong app — dùng khi file đã chọn chưa tải về được
+  /// (máy vừa cài, mất mạng, hoặc file tải hỏng) để thiết bị nào cũng có tiếng.
+  Future<String?> prepareBundledGreetingPath() async {
+    final path = await _prepareAssetFile(AppConstants.defaultAudioAsset);
+    return path.isEmpty ? null : path;
   }
 
   /// Copy asset vào Documents (không dùng temp — iOS có thể xóa temp bất kỳ lúc nào).
@@ -178,7 +191,7 @@ class AudioRepository {
       final fileName = assetPath.split('/').last;
       final destFile = File('${audioDir.path}/$fileName');
 
-      if (await destFile.exists() && await destFile.length() > 0) {
+      if (await SyncService.instance.isValidAudioFile(destFile.path)) {
         return destFile.path;
       }
 

@@ -1,0 +1,14 @@
+---
+description: Flutter UI patterns — Provider, ScreenUtil, screens
+globs: lib/screens/**/*.dart,lib/widgets/**/*.dart,lib/overlay/**/*.dart
+alwaysApply: false
+---
+
+# Flutter UI
+
+- Providers: Auth, Audio, Bluetooth, Overlay, Settings, Permission, Studio.
+- No heavy logic in `build`; call provider methods.
+- ScreenUtil everywhere for size/spacing/typography.
+- Overlay: show when app paused/background; hide on resume; survive clear-from-recents via FGS.
+- Settings Demo Beta toggles both `SettingsProvider` and `AudioProvider.setBetaMode`.
+- Home: greeting/goodbye buttons → native via `AudioProvider.play*ViaNative`.

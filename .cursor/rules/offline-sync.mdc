@@ -1,0 +1,15 @@
+---
+description: Server sync, offline cache, and safe audio download rules
+globs: lib/data/services/sync_service.dart,lib/data/repositories/audio_repository.dart,lib/providers/audio_provider.dart,lib/data/services/api_client.dart,lib/data/services/remote_config_service.dart
+alwaysApply: false
+---
+
+# Offline & sync
+
+- Base URL: RemoteConfig (`api_base_url`) then fallback `admintts.../api`.
+- Sync failure → keep local list/files; never bulk-delete on network error.
+- Download to `*.part` → validate size + MP3 header (`ID3` / frame sync) → rename.
+- Skip re-download only if hash matches **and** file is valid; delete corrupt leftovers.
+- `pinActiveAudio`: validate source; copy via temp rename; never pin corrupt bytes to `active_*.mp3` / boot copies.
+- Offline OK after first successful login+download; fresh install needs network once.
+- DNS / host lookup errors are sync-only — they do not stop local MediaPlayer.

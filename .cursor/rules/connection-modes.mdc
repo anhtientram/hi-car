@@ -1,0 +1,25 @@
+---
+description: Connection mode ownership and auto-play rules (BT, AA, screen, box)
+alwaysApply: true
+---
+
+# Connection modes
+
+Prefs key: `connection_mode`.
+
+| Value | Owner of greeting playback |
+|-------|----------------------------|
+| `phone_bluetooth` | Native `ACTION_BT_WATCH_A2DP` only — Flutter BT callback must **not** also play |
+| `phone_android_auto` | Native CarConnection / gearhead watch + MediaSession; one play per AA session |
+| `android_screen_mode` | Flutter play-on-open + resume; minimize on natural complete |
+| `android_box_mode` | `BootReceiver` + boot readiness poll / alarms — Flutter open must **not** also play |
+
+## Rules
+
+- Match target BT device before auto-play (`target_device_address`).
+- BT delay: user `delay_seconds`, minimum ~3s after A2DP ready.
+- BT greeting: **one play per session**. ACL flap 20–30 min later must not replay. Keep session for ~15 min after ACL disconnect (leave car = new session).
+- Do **not** reset `lastGreetingTriggerAtMs` on every `ACTION_BT_WATCH_A2DP`.
+- AA: if BT flow running when projection starts → cancel BT delayed play, switch AA.
+- Box: Direct Boot prefs + `boot_*.mp3`; FGS type `specialUse` when started from boot (API 34+).
+- Screen mode: hibernate/resume preferred over cold boot; don't rely only on `BOOT_COMPLETED`.
