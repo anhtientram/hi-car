@@ -89,7 +89,7 @@ class AudioRepository {
   ) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(AppConstants.keyGreetingAudioId);
-    await prefs.remove('greeting_audio_path');
+    await prefs.remove(AppConstants.keyGreetingAudioPath);
 
     final updated =
         currentList.map((a) => a.copyWith(isActiveGreeting: false)).toList();
@@ -103,7 +103,7 @@ class AudioRepository {
   ) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(AppConstants.keyGoodbyeAudioId);
-    await prefs.remove('goodbye_audio_path');
+    await prefs.remove(AppConstants.keyGoodbyeAudioPath);
 
     final updated =
         currentList.map((a) => a.copyWith(isActiveGoodbye: false)).toList();
@@ -151,6 +151,20 @@ class AudioRepository {
     if (!audio.hasLocalFile || audio.localPath == null) return null;
     final exists = await SyncService.instance.fileExists(audio.localPath);
     return exists ? audio.localPath : null;
+  }
+
+  /// Đường dẫn file đã ghim trước đó nếu nó còn dùng được.
+  ///
+  /// Dùng để KHÔNG ghi đè lựa chọn của khách bằng bản dựng sẵn khi danh sách nhạc chưa
+  /// nạp xong (vừa đăng nhập lại, đang offline). Trả về null nếu chưa ghim hoặc file hỏng.
+  Future<String?> existingPinnedPath(String fileName) async {
+    try {
+      final audioDir = await SyncService.instance.getAudioDir();
+      final path = '${audioDir.path}/$fileName';
+      return await SyncService.instance.isValidAudioFile(path) ? path : null;
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Sao chép file lời chào/tạm biệt sang tên cố định trong Documents.

@@ -260,7 +260,10 @@ class BluetoothReceiver : BroadcastReceiver() {
         // Priority: Regular prefs (latest from UI) -> Protected prefs (boot sequence)
         val prefs = if (regularPrefs.all.isNotEmpty()) regularPrefs else protectedPrefs
         
-        val connectionMode = prefs.getString("flutter.connection_mode", "phone_bluetooth") ?: "phone_bluetooth"
+        val connectionMode = prefs.getString(
+            "flutter.connection_mode",
+            AudioForegroundService.DEFAULT_CONNECTION_MODE
+        ) ?: AudioForegroundService.DEFAULT_CONNECTION_MODE
         val targetAddress = prefs.getString("flutter.target_device_address", "") ?: ""
         val autoPlayEnabled = prefs.getBoolean("flutter.auto_play_enabled", true)
 

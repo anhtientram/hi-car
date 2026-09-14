@@ -117,6 +117,21 @@ import AppIntents
 
 // MARK: - Audio Player
 
+/// Kết quả một lượt tự phát.
+///
+/// Phân biệt `duplicate` với `failed` là bắt buộc: CarPlay kết nối làm bộ theo dõi route
+/// phát lời chào, rồi Tự động hoá trong app Phím tắt chạy tiếp và bị chặn trùng. Nếu coi
+/// lần bị chặn đó là thất bại thì Phím tắt hiện "Không phát được lời chào" ngay giữa lúc
+/// xe đang phát lời chào — đúng lỗi khách báo.
+enum AutoPlayOutcome {
+  /// Đã phát và xác nhận có tiếng.
+  case played
+  /// Bỏ qua vì vừa phát xong / đang phát dở — KHÔNG phải lỗi.
+  case duplicate
+  /// Thử hết số lần cho phép mà không ra tiếng.
+  case failed
+}
+
 /// Quản lý phát lời chào/tạm biệt trên iOS bằng AVAudioPlayer.
 ///
 /// Nguyên tắc để CarPlay/Bluetooth ổn định:
@@ -187,8 +202,11 @@ final class HiCarAudioPlayer: NSObject, AVAudioPlayerDelegate {
       configureSession()
     }
 
-    if isSessionActive { return true }
-
+    // ⚠️ KHÔNG tin vào cờ `isSessionActive` để bỏ qua setActive. Plugin khác (just_audio khi
+    // nghe thử trong app, audio_session) hoặc chính hệ thống có thể đã hạ session xuống mà
+    // ta không hay biết — khi đó cờ vẫn true, ta bỏ qua activate và AVAudioPlayer.play()
+    // trả về true nhưng không ra tiếng: đúng triệu chứng "đã set nhạc mà không phát được".
+    // setActive(true) khi session đang hoạt động là thao tác rỗng, không gây đổi route.
     do {
       try session.setActive(true, options: [])
       isSessionActive = true
@@ -325,13 +343,13 @@ final class HiCarAudioPlayer: NSObject, AVAudioPlayerDelegate {
   /// Route mất CarPlay có thể chỉ là nhiễu thoáng qua (đầu xe đổi nguồn phát, cuộc gọi
   /// chen ngang, session vừa bị plugin khác đụng vào). Chờ một nhịp rồi soi lại, tránh
   /// cảnh đang nghe lời chào tự dưng nhảy sang lời tạm biệt.
-  private func playGoodbyeIfReallyDisconnected() async -> Bool {
+  private func playGoodbyeIfReallyDisconnected() async -> AutoPlayOutcome {
     try? await Task.sleep(nanoseconds: 1_500_000_000)
     let stillGone = await MainActor.run { !self.hasCarPlayRoute() }
     guard stillGone else {
       NSLog("HiCar: CarPlay quay lại sau 1.5s → bỏ lời tạm biệt")
       await MainActor.run { self.wasCarPlayConnected = true }
-      return false
+      return .duplicate
     }
     return await playOnVehicleDisconnected(type: "goodbye")
   }
@@ -402,9 +420,10 @@ final class HiCarAudioPlayer: NSObject, AVAudioPlayerDelegate {
       return false
     }
 
-    guard activateSession() else {
-      NSLog("HiCar: không kích hoạt được audio session → bỏ phát \(type)")
-      return false
+    // Không kích hoạt được session thì VẪN thử phát: AVAudioPlayer tự kích hoạt session ngầm
+    // trong phần lớn trường hợp, còn bỏ cuộc ở đây là chắc chắn im lặng.
+    if !activateSession() {
+      NSLog("HiCar: không kích hoạt được audio session → vẫn thử phát \(type) best-effort")
     }
 
     NSLog("HiCar: play type=\(type) route=[\(currentRouteDescription())]")
@@ -460,11 +479,11 @@ final class HiCarAudioPlayer: NSObject, AVAudioPlayerDelegate {
   }
 
   /// Dùng khi vừa nối CarPlay/Bluetooth (Shortcut hoặc bộ theo dõi route).
-  func playOnVehicleConnected(type: String) async -> Bool {
-    guard await beginAutoPlay(type: type) else { return false }
+  func playOnVehicleConnected(type: String) async -> AutoPlayOutcome {
+    guard await beginAutoPlay(type: type) else { return .duplicate }
     defer { Task { await endAutoPlay(type: type) } }
 
-    return await withBackgroundTask(name: "HiCar.\(type)") {
+    let played = await withBackgroundTask(name: "HiCar.\(type)") {
       // CarPlay gắn route chậm hơn Bluetooth; chỉ ĐỌC route trong lúc chờ.
       let wait = await self.waitForVehicleRoute(timeoutMs: 10_000)
 
@@ -485,15 +504,16 @@ final class HiCarAudioPlayer: NSObject, AVAudioPlayerDelegate {
       }
       return false
     }
+    return played ? .played : .failed
   }
 
   /// Dùng khi vừa NGẮT xe. KHÔNG chờ route xe — route đó chắc chắn đã mất, chờ chỉ làm lời
   /// tạm biệt phát trễ cả chục giây (hoặc không phát).
-  func playOnVehicleDisconnected(type: String) async -> Bool {
-    guard await beginAutoPlay(type: type) else { return false }
+  func playOnVehicleDisconnected(type: String) async -> AutoPlayOutcome {
+    guard await beginAutoPlay(type: type) else { return .duplicate }
     defer { Task { await endAutoPlay(type: type) } }
 
-    return await withBackgroundTask(name: "HiCar.\(type)") {
+    let played = await withBackgroundTask(name: "HiCar.\(type)") {
       for attempt in 1...2 {
         if attempt > 1 { try? await Task.sleep(nanoseconds: 700_000_000) }
         let ok = await self.playAndVerify(type: type)
@@ -502,6 +522,7 @@ final class HiCarAudioPlayer: NSObject, AVAudioPlayerDelegate {
       }
       return false
     }
+    return played ? .played : .failed
   }
 
   /// Chặn hai nguồn kích hoạt (Phím tắt + theo dõi route) phát chồng lên nhau.
@@ -633,10 +654,17 @@ struct PlayGreetingIntent: AppIntent {
       return .result(dialog: "Chưa cấu hình lời chào trong ứng dụng HiCar. Hãy mở app và đặt lời chào.")
     }
     // Chờ audio route xe (CarPlay chậm hơn Bluetooth) rồi mới phát.
-    let ok = await HiCarAudioPlayer.shared.playOnVehicleConnected(type: "greeting")
-    let message = ok
-      ? "Đang phát lời chào."
-      : "Không phát được lời chào qua CarPlay/Bluetooth. Hãy mở app HiCar bấm Phát lời chào thử, rồi kết nối lại."
+    let outcome = await HiCarAudioPlayer.shared.playOnVehicleConnected(type: "greeting")
+    let message: String
+    switch outcome {
+    case .played:
+      message = "Đang phát lời chào."
+    case .duplicate:
+      message = "Lời chào đã được phát cho lần kết nối này."
+    case .failed:
+      let route = await MainActor.run { HiCarAudioPlayer.shared.currentRouteDescription() }
+      message = "Không phát được lời chào qua CarPlay/Bluetooth (đường ra hiện tại: \(route)). Hãy mở app HiCar bấm Phát lời chào thử, rồi kết nối lại."
+    }
     return .result(dialog: "\(message)")
   }
 }
@@ -656,10 +684,16 @@ struct PlayGoodbyeIntent: AppIntent {
       return .result(dialog: "Chưa cấu hình lời tạm biệt trong ứng dụng HiCar. Hãy mở app và đặt lời tạm biệt.")
     }
     // Tạm biệt chạy lúc vừa NGẮT xe → phát ngay, không chờ route.
-    let ok = await HiCarAudioPlayer.shared.playOnVehicleDisconnected(type: "goodbye")
-    let message = ok
-      ? "Đang phát lời tạm biệt."
-      : "Không phát được lời tạm biệt qua CarPlay/Bluetooth. Hãy mở app HiCar rồi kết nối lại."
+    let outcome = await HiCarAudioPlayer.shared.playOnVehicleDisconnected(type: "goodbye")
+    let message: String
+    switch outcome {
+    case .played:
+      message = "Đang phát lời tạm biệt."
+    case .duplicate:
+      message = "Lời tạm biệt đã được phát cho lần ngắt kết nối này."
+    case .failed:
+      message = "Không phát được lời tạm biệt qua CarPlay/Bluetooth. Hãy mở app HiCar rồi kết nối lại."
+    }
     return .result(dialog: "\(message)")
   }
 }

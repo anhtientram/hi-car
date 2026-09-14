@@ -138,9 +138,54 @@ class AudioProvider extends ChangeNotifier {
     }
   }
 
+  /// Chưa cấu hình lời chào tự động mà tài khoản đã có nhạc → chọn sẵn giúp người dùng.
+  ///
+  /// Máy mới cài / vừa đăng nhập lần đầu, khách đồng bộ xong là dùng được ngay, không phải
+  /// mở menu ba chấm đặt tay (menu đó vẫn giữ để đổi bài).
+  Future<bool> _autoSelectGreetingIfMissing() async {
+    if (_activeGreetingId != null && _activeGreetingId!.isNotEmpty) return false;
+
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool(AppConstants.keyGreetingClearedByUser) ?? false) return false;
+
+    final candidates = _audioList
+        .where((a) =>
+            a.id.isNotEmpty &&
+            a.id != AppConstants.defaultGoodbyeId &&
+            a.id != AppConstants.defaultGreetingId &&
+            a.id != _effectiveGoodbyeId &&
+            a.type != AudioType.goodbye)
+        .toList();
+    if (candidates.isEmpty) return false;
+
+    // Ưu tiên: đúng loại "lời chào" và đã tải về > đúng loại > đã tải về > bài đầu danh sách.
+    AudioModel? pick;
+    for (final test in <bool Function(AudioModel)>[
+      (a) => a.type == AudioType.greeting && a.hasLocalFile,
+      (a) => a.type == AudioType.greeting,
+      (a) => a.hasLocalFile,
+    ]) {
+      pick = candidates.where(test).firstOrNull;
+      if (pick != null) break;
+    }
+    pick ??= candidates.first;
+
+    debugPrint(
+        'AudioProvider: chưa có lời chào tự động → tự chọn "${pick.title}" (${pick.id})');
+    await setAsGreeting(pick.id);
+    return true;
+  }
+
   // ===== Init =====
 
+  bool _initialized = false;
+
   Future<void> init() async {
+    // main() và SplashScreen đều gọi init(); chạy hai lần sẽ đăng ký callback chồng và
+    // bắn hai lượt đồng bộ song song.
+    if (_initialized) return;
+    _initialized = true;
+
     _audioList = await AudioRepository.instance.loadLocalAudioList();
 
     final prefs = await SharedPreferences.getInstance();
@@ -148,6 +193,8 @@ class AudioProvider extends ChangeNotifier {
     _activeGreetingId = prefs.getString(AppConstants.keyGreetingAudioId);
     _activeGoodbyeId = prefs.getString(AppConstants.keyGoodbyeAudioId);
     await _ensureDefaultGoodbye();
+    // Danh sách đã có sẵn trên máy (offline / lần mở sau) mà chưa đặt lời chào → chọn luôn.
+    await _autoSelectGreetingIfMissing();
 
     notifyListeners();
 
@@ -204,14 +251,21 @@ class AudioProvider extends ChangeNotifier {
     await prefs.remove(AppConstants.keyAudioList);
     await prefs.remove('cached_audio_list');
 
-    if (!keepActiveSelection) {
+    if (keepActiveSelection) {
+      // Đọc LẠI từ prefs thay vì tin vào giá trị đang giữ trong RAM: đăng nhập bằng tài
+      // khoản khác đã xoá lựa chọn ở prefs, nếu giữ bản cũ thì lời chào của người trước
+      // được ghim lại ngay lần đồng bộ kế tiếp.
+      _activeGreetingId = prefs.getString(AppConstants.keyGreetingAudioId);
+      _activeGoodbyeId = prefs.getString(AppConstants.keyGoodbyeAudioId);
+      await _ensureDefaultGoodbye();
+    } else {
       _activeGreetingId = null;
       _activeGoodbyeId = AppConstants.defaultGoodbyeId;
       await prefs.remove(AppConstants.keyGreetingAudioId);
       await prefs.setString(
           AppConstants.keyGoodbyeAudioId, AppConstants.defaultGoodbyeId);
-      await prefs.remove('greeting_audio_path');
-      await prefs.remove('goodbye_audio_path');
+      await prefs.remove(AppConstants.keyGreetingAudioPath);
+      await prefs.remove(AppConstants.keyGoodbyeAudioPath);
     }
 
     notifyListeners();
@@ -248,8 +302,12 @@ class AudioProvider extends ChangeNotifier {
       _activeGoodbyeId = prefs.getString(AppConstants.keyGoodbyeAudioId);
       await _ensureDefaultGoodbye();
 
+      // 🟢 Chưa cấu hình lời chào mà đồng bộ về đã có nhạc → đặt luôn cho người dùng.
+      //    setAsGreeting() đã tự gọi _syncNativePaths nên không cần lặp lại bên dưới.
+      final autoPicked = await _autoSelectGreetingIfMissing();
+
       // Update native service
-      await _syncNativePaths();
+      if (!autoPicked) await _syncNativePaths();
     } catch (e) {
       _syncStatus = SyncStatus.error;
       _syncError = ApiClient.formatError(e);
@@ -277,6 +335,8 @@ class AudioProvider extends ChangeNotifier {
 
   Future<void> setAsGreeting(String audioId) async {
     _activeGreetingId = audioId;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(AppConstants.keyGreetingClearedByUser);
     _audioList =
         await AudioRepository.instance.setGreetingAudio(audioId, _audioList);
 
@@ -330,7 +390,9 @@ class AudioProvider extends ChangeNotifier {
     _activeGreetingId = null;
     _audioList = await AudioRepository.instance.clearGreetingAudio(_audioList);
     final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('greeting_audio_path');
+    await prefs.remove(AppConstants.keyGreetingAudioPath);
+    // Chủ động bỏ đặt → lần đồng bộ sau KHÔNG tự chọn lại giúp nữa.
+    await prefs.setBool(AppConstants.keyGreetingClearedByUser, true);
     await ServiceChannel.instance.clearGreetingConfig();
     notifyListeners();
   }
@@ -435,7 +497,7 @@ class AudioProvider extends ChangeNotifier {
 
     if (path == null || path.isEmpty) {
       final prefs = await SharedPreferences.getInstance();
-      final saved = prefs.getString('greeting_audio_path');
+      final saved = prefs.getString(AppConstants.keyGreetingAudioPath);
       if (await SyncService.instance.isValidAudioFile(saved)) path = saved;
       debugPrint('AudioProvider: greeting fallback path=$path');
     }
@@ -515,7 +577,7 @@ class AudioProvider extends ChangeNotifier {
 
     if (path == null || path.isEmpty) {
       final prefs = await SharedPreferences.getInstance();
-      path = prefs.getString('goodbye_audio_path');
+      path = prefs.getString(AppConstants.keyGoodbyeAudioPath);
       debugPrint('AudioProvider: goodbye fallback path=$path');
     }
 
@@ -684,15 +746,24 @@ class AudioProvider extends ChangeNotifier {
   Future<void> _syncNativePaths() async {
     var greetingSource =
         await AudioRepository.instance.getGreetingAudioPath(activeGreeting);
-    // Đã chọn lời chào nhưng file chưa tải về / hỏng → ghim bản dựng sẵn để native (kể cả
-    // luồng boot khi app chưa mở) luôn có file hợp lệ để phát.
+    // Đã chọn lời chào nhưng chưa giải ra file (danh sách chưa nạp xong sau khi đăng nhập
+    // lại, đang offline, hoặc file tải về hỏng).
     if ((greetingSource == null || greetingSource.isEmpty) &&
         (_activeGreetingId?.isNotEmpty ?? false)) {
-      greetingSource =
+      // ƯU TIÊN bản đã ghim từ lần cấu hình trước. Trước đây nhánh này nhảy thẳng sang lời
+      // chào dựng sẵn và ghi đè active_greeting.mp3 + boot_greeting.mp3 → khách đã chọn
+      // nhạc riêng, đăng nhập lại phát ra nhạc khác.
+      greetingSource = await AudioRepository.instance
+              .existingPinnedPath(AudioRepository.activeGreetingFileName) ??
           await AudioRepository.instance.prepareBundledGreetingPath();
     }
-    final goodbyeSource =
+    var goodbyeSource =
         await AudioRepository.instance.getGoodbyeAudioPath(activeGoodbye);
+    if ((goodbyeSource == null || goodbyeSource.isEmpty) &&
+        (_activeGoodbyeId?.isNotEmpty ?? false)) {
+      goodbyeSource = await AudioRepository.instance
+          .existingPinnedPath(AudioRepository.activeGoodbyeFileName);
+    }
 
     // Pin sang tên cố định để CarPlay/App Intent luôn tìm được file.
     final greetingPath = await AudioRepository.instance.pinActiveAudio(
@@ -707,14 +778,14 @@ class AudioProvider extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
 
     if (greetingPath != null && greetingPath.isNotEmpty) {
-      await prefs.setString('greeting_audio_path', greetingPath);
+      await prefs.setString(AppConstants.keyGreetingAudioPath, greetingPath);
     } else {
-      await prefs.remove('greeting_audio_path');
+      await prefs.remove(AppConstants.keyGreetingAudioPath);
     }
     if (goodbyePath != null && goodbyePath.isNotEmpty) {
-      await prefs.setString('goodbye_audio_path', goodbyePath);
+      await prefs.setString(AppConstants.keyGoodbyeAudioPath, goodbyePath);
     } else {
-      await prefs.remove('goodbye_audio_path');
+      await prefs.remove(AppConstants.keyGoodbyeAudioPath);
     }
 
     // Đồng bộ sang native (Android Direct Boot + iOS UserDefaults flush)

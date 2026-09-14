@@ -13,8 +13,8 @@ class SettingsProvider extends ChangeNotifier {
   bool _bluetoothAutoPlay = true;
   bool _androidAutoEnabled = true;
   bool _showNotification = true;
-  String _connectionMode =
-      'android_screen_mode'; // 'android_screen_mode', 'android_box_mode', 'phone_bluetooth'
+  // 'android_screen_mode' | 'android_box_mode' | 'phone_bluetooth' | 'phone_android_auto'
+  String _connectionMode = AppConstants.defaultConnectionMode;
   bool _playOnOpen = true;
   String? _pendingConnectionMode;
   bool _isBetaMode = false;
@@ -42,7 +42,13 @@ class SettingsProvider extends ChangeNotifier {
       _connectionMode = AppConstants.iosCarplayMode;
     } else {
       _connectionMode =
-          prefs.getString('connection_mode') ?? 'android_screen_mode';
+          prefs.getString('connection_mode') ?? AppConstants.defaultConnectionMode;
+    }
+    // Ghi lại ngay cả khi chỉ là giá trị mặc định: native (Service / BootReceiver /
+    // BluetoothReceiver) đọc thẳng key này từ SharedPreferences. Thiếu key thì mỗi nơi
+    // rơi về mặc định riêng và có thể tự phát nhạc ở chế độ người dùng không hề chọn.
+    if (prefs.getString('connection_mode') != _connectionMode) {
+      await prefs.setString('connection_mode', _connectionMode);
     }
     _playOnOpen = prefs.getBool('play_on_open') ?? true;
     _isBetaMode = prefs.getBool('is_beta_mode') ?? false;

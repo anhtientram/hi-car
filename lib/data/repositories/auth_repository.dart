@@ -59,15 +59,14 @@ class AuthRepository {
     await prefs.remove(AppConstants.keyAuthToken);
     await prefs.remove(AppConstants.keyUserData);
 
-    // Audio Metadata
+    // Audio Metadata — sẽ được tải lại ở lần đồng bộ sau.
     await prefs.remove(AppConstants.keyAudioList);
     await prefs.remove('cached_audio_list');
 
-    // Audio Selection
-    await prefs.remove(AppConstants.keyGreetingAudioId);
-    await prefs.remove(AppConstants.keyGoodbyeAudioId);
-    await prefs.remove('greeting_audio_path');
-    await prefs.remove('goodbye_audio_path');
+    // ⚠️ KHÔNG xoá lựa chọn lời chào/tạm biệt ở đây. Đăng xuất rồi đăng nhập lại cùng tài
+    // khoản mà mất cấu hình thì app tự chọn đại một bài khác trong danh sách → khách phản
+    // ánh "hôm sau xe phát nhạc lạ". Đổi sang tài khoản KHÁC đã được xử lý riêng ở
+    // _clearAudioSelectionIfAccountChanged khi lưu người dùng mới.
 
     // Others
     await prefs.remove(AppConstants.keyLastSyncTime);
@@ -147,10 +146,48 @@ class AuthRepository {
 
   Future<void> _saveUser(UserModel user) async {
     final prefs = await SharedPreferences.getInstance();
+    await _clearAudioSelectionIfAccountChanged(prefs, user.id);
     if (user.token != null) {
       await prefs.setString(AppConstants.keyAuthToken, user.token!);
     }
     await prefs.setString(AppConstants.keyUserData, user.toJsonString());
+  }
+
+  /// Đăng nhập bằng tài khoản KHÁC → bỏ lựa chọn lời chào/tạm biệt của tài khoản trước.
+  ///
+  /// Đăng nhập lại vẫn giữ nguyên cấu hình (cùng id → không làm gì). Nhưng nếu đổi tài
+  /// khoản mà vẫn giữ, id lời chào cũ sẽ không có trong danh sách mới, còn file đã ghim
+  /// (`active_greeting.mp3` / `boot_greeting.mp3`) vẫn là nhạc của người trước → xe phát
+  /// nhầm giọng của tài khoản cũ.
+  Future<void> _clearAudioSelectionIfAccountChanged(
+    SharedPreferences prefs,
+    String userId,
+  ) async {
+    if (userId.isEmpty) return;
+    final previous = prefs.getString(AppConstants.keyLastAccountId);
+    await prefs.setString(AppConstants.keyLastAccountId, userId);
+    if (previous == null || previous == userId) return;
+
+    for (final key in [
+      AppConstants.keyGreetingAudioId,
+      AppConstants.keyGoodbyeAudioId,
+      AppConstants.keyGreetingAudioPath,
+      AppConstants.keyGoodbyeAudioPath,
+      AppConstants.keyAudioList,
+      'cached_audio_list',
+      AppConstants.keyGreetingClearedByUser,
+    ]) {
+      await prefs.remove(key);
+    }
+
+    try {
+      await ServiceChannel.instance
+          .clearGreetingConfig()
+          .timeout(const Duration(seconds: 2));
+      await ServiceChannel.instance
+          .clearGoodbyeConfig()
+          .timeout(const Duration(seconds: 2));
+    } catch (_) {}
   }
 
   Future<void> _refreshUserFromMe(Map<String, dynamic> me) async {

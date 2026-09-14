@@ -86,7 +86,10 @@ class AudioModel {
           : null,
       isActiveGreeting: json['is_active_greeting'] as bool? ?? false,
       isActiveGoodbye: json['is_active_goodbye'] as bool? ?? false,
-      durationSeconds: json['duration'] as int? ?? 0,
+      // Server trả `duration`, còn bản lưu cục bộ (toJson) ghi `duration_seconds`.
+      // Chỉ đọc `duration` thì mỗi lần nạp lại từ máy thời lượng về 0 → watchdog phát nhạc
+      // rơi về mốc mặc định 60s, animation "đang phát" treo lâu sau khi clip đã xong.
+      durationSeconds: _readInt(json['duration'] ?? json['duration_seconds']),
       description: json['description'] as String?,
       assetPath: json['asset_path'] as String?,
     );
@@ -140,6 +143,13 @@ class AudioModel {
       hash: hash ?? this.hash,
       assetPath: assetPath ?? this.assetPath,
     );
+  }
+
+  static int _readInt(dynamic value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    if (value is String) return int.tryParse(value) ?? 0;
+    return 0;
   }
 
   static List<AudioModel> fromJsonList(String jsonString) {

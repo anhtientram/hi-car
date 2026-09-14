@@ -12,6 +12,14 @@ class AppConstants {
 
   // ===== Connection Modes =====
   static const String iosCarplayMode = 'ios_carplay';
+  static const String bluetoothMode = 'phone_bluetooth';
+  static const String androidAutoMode = 'phone_android_auto';
+  static const String screenMode = 'android_screen_mode';
+  static const String boxMode = 'android_box_mode';
+
+  /// Mode dùng khi prefs chưa có giá trị. PHẢI trùng với
+  /// `AudioForegroundService.DEFAULT_CONNECTION_MODE` bên Kotlin.
+  static const String defaultConnectionMode = screenMode;
 
   // ===== SharedPreferences Keys =====
   static const String keyAuthToken = 'auth_token';
@@ -24,6 +32,12 @@ class AppConstants {
   static const String keyGoodbyeAudioId = 'goodbye_audio_id';
   static const String keyAutoPlayEnabled = 'auto_play_enabled';
   static const String keyLastSyncTime = 'last_sync_time';
+  static const String keyGreetingAudioPath = 'greeting_audio_path';
+  static const String keyGoodbyeAudioPath = 'goodbye_audio_path';
+  /// Người dùng đã chủ động bỏ đặt lời chào → không tự chọn lại giúp họ nữa.
+  static const String keyGreetingClearedByUser = 'greeting_cleared_by_user';
+  /// Tài khoản của lần đăng nhập gần nhất, để phát hiện đổi tài khoản.
+  static const String keyLastAccountId = 'last_account_id';
 
   // ===== Audio Dirs =====
   static const String audioDirName = 'hicar_audio';

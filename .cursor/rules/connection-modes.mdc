@@ -1,14 +1,10 @@
----
-description: Connection mode ownership and auto-play rules (BT, AA, screen, box)
-alwaysApply: true
----
-
 # Connection modes
 
-Prefs key: `connection_mode`.
+Prefs key: `connection_mode`. Mặc định = `android_screen_mode` ở **cả** Dart
+(`AppConstants.defaultConnectionMode`) và Kotlin (`AudioForegroundService.DEFAULT_CONNECTION_MODE`).
 
 | Value | Owner of greeting playback |
-|-------|----------------------------|
+|----|----|
 | `phone_bluetooth` | Native `ACTION_BT_WATCH_A2DP` only — Flutter BT callback must **not** also play |
 | `phone_android_auto` | Native CarConnection / gearhead watch + MediaSession; one play per AA session |
 | `android_screen_mode` | Flutter play-on-open + resume; minimize on natural complete |
@@ -17,9 +13,23 @@ Prefs key: `connection_mode`.
 ## Rules
 
 - Match target BT device before auto-play (`target_device_address`).
-- BT delay: user `delay_seconds`, minimum ~3s after A2DP ready.
-- BT greeting: **one play per session**. ACL flap 20–30 min later must not replay. Keep session for ~15 min after ACL disconnect (leave car = new session).
+- BT delay đếm **từ lúc ACL connect**, không cộng thêm sau khi A2DP sẵn sàng:
+  `max(delay_seconds - elapsedSinceAcl, BT_MIN_AFTER_A2DP_MS)`.
+- BT greeting: **one play per session**. ACL flap 20–30 min later must not replay. Keep session
+  for ~15 min after ACL disconnect (leave car = new session).
+- Hết phiên phải quyết định **thuần theo thời gian** (grace từ lúc ngắt, hoặc `BT_SESSION_MAX_MS`),
+  không phụ thuộc `isAddressConnected` — lúc kiểm tra thì xe vừa nối lại nên luôn true.
+- Đọc cờ "đã chào phiên này" **trước** khi gọi `cancelBtSessionEnd()` (hàm đó xoá mốc ngắt).
 - Do **not** reset `lastGreetingTriggerAtMs` on every `ACTION_BT_WATCH_A2DP`.
+- Watch A2DP / projection hết timeout mà xe còn nối → phát **best-effort**, không huỷ action.
+  Màn Trung Quốc rẻ thường không báo `getProfileConnectionState`; soi thêm
+  `AudioManager.getDevices()` tìm `TYPE_BLUETOOTH_A2DP`.
 - AA: if BT flow running when projection starts → cancel BT delayed play, switch AA.
+- AA không dây bắt tay qua BT nên ACL hay nhấp nháy: **không** reset cờ phiên AA khi nhận
+  `ACTION_AA_WATCH_PROJECTION`; hết phiên theo `AA_SESSION_GRACE_MS` kể từ lúc projection dừng.
 - Box: Direct Boot prefs + `boot_*.mp3`; FGS type `specialUse` when started from boot (API 34+).
 - Screen mode: hibernate/resume preferred over cold boot; don't rely only on `BOOT_COMPLETED`.
+- Screen mode minimize = `Activity.moveTaskToBack(true)`; HOME intent chỉ là fallback (nhiều
+  màn độ / box không cho app khác gọi launcher).
+- Bong bóng nổi: `is_bubble_enabled` lưu **ý muốn người dùng**, không lưu kết quả check quyền.
+  Quyền hỏng nhất thời lúc boot không được phép tắt vĩnh viễn bong bóng.

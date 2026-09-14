@@ -34,14 +34,28 @@ class OverlayProvider extends ChangeNotifier {
   // 2 nút (chào + tạm biệt), không còn nút mở app.
   static const double _overlayWindowHeight = 170.0;
 
+  static const String _kBubbleWantedKey = 'is_bubble_enabled';
+
   bool _isOverlayShowing = false;
   bool _hasPermission = false;
-  bool _isBubbleEnabled = false;
+
+  /// Ý MUỐN của người dùng (bật/tắt nút nổi). Chỉ thay đổi khi người dùng tự bấm.
+  ///
+  /// ⚠️ Trước đây trạng thái này bị ghi `false` mỗi khi `isPermissionGranted()` trả về
+  /// false — kể cả khi đó chỉ là trục trặc nhất thời (plugin chưa attach xong lúc máy
+  /// vừa khởi động, head unit trả lời chậm). Một lần lỗi như vậy là nút nổi bị TẮT VĨNH
+  /// VIỄN trong prefs: lần khởi động xe sau chỉ còn lời chào, không thấy bong bóng nữa.
+  bool _bubbleWanted = true;
   bool _enableAfterPermissionGrant = false;
 
   bool get isOverlayShowing => _isOverlayShowing;
   bool get hasPermission => _hasPermission;
-  bool get isBubbleEnabled => _isBubbleEnabled;
+
+  /// Người dùng muốn bật nút nổi hay không (không phụ thuộc trạng thái quyền).
+  bool get isBubbleWanted => _bubbleWanted;
+
+  /// Nút nổi thực sự dùng được: người dùng muốn bật VÀ đã có quyền hiển thị trên ứng dụng khác.
+  bool get isBubbleEnabled => _bubbleWanted && _hasPermission;
 
   int _toInitialOverlayPixels(double logicalSize) {
     final views = ui.PlatformDispatcher.instance.views;
@@ -52,12 +66,8 @@ class OverlayProvider extends ChangeNotifier {
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
     await OverlayDebugStore.load();
+    _bubbleWanted = prefs.getBool(_kBubbleWantedKey) ?? true;
     await checkPermission();
-    final savedBubbleEnabled = prefs.getBool('is_bubble_enabled');
-    _isBubbleEnabled = _hasPermission ? (savedBubbleEnabled ?? true) : false;
-    if (!_hasPermission && savedBubbleEnabled != false) {
-      await prefs.setBool('is_bubble_enabled', false);
-    }
     notifyListeners();
     await syncOverlayState();
   }
@@ -68,17 +78,18 @@ class OverlayProvider extends ChangeNotifier {
     } catch (_) {
       _hasPermission = false;
     }
+    // Vừa cấp quyền xong sau khi người dùng bấm bật → chốt lại ý muốn "bật".
     if (_hasPermission && _enableAfterPermissionGrant) {
       _enableAfterPermissionGrant = false;
-      _isBubbleEnabled = true;
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool('is_bubble_enabled', true);
-    } else if (!_hasPermission) {
-      _isBubbleEnabled = false;
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool('is_bubble_enabled', false);
+      await _setBubbleWanted(true);
     }
     notifyListeners();
+  }
+
+  Future<void> _setBubbleWanted(bool value) async {
+    _bubbleWanted = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kBubbleWantedKey, value);
   }
 
   Future<void> syncOverlayState() async {
@@ -108,41 +119,26 @@ class OverlayProvider extends ChangeNotifier {
         _enableAfterPermissionGrant = true;
         final granted = await requestPermission();
         if (!granted) {
-          _isBubbleEnabled = false;
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.setBool('is_bubble_enabled', false);
+          await _setBubbleWanted(false);
           notifyListeners();
           return false;
         }
-      }
-
-      if (!_hasPermission) {
-        _isBubbleEnabled = false;
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setBool('is_bubble_enabled', false);
-        notifyListeners();
-        return false;
       }
     } else {
       _enableAfterPermissionGrant = false;
     }
 
-    _isBubbleEnabled = value;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('is_bubble_enabled', value);
+    await _setBubbleWanted(value);
     notifyListeners();
 
-    if (value) {
-      // If enabled and app is in background, it will show automatically.
-    } else {
-      await hideOverlay();
-    }
+    if (!value) await hideOverlay();
     return true;
   }
 
   Future<void> showOverlay() async {
-    if (!_isBubbleEnabled) return;
-    await checkPermission();
+    if (!_bubbleWanted) return;
+    // Quyền có thể vừa được cấp ở màn hình hệ thống → đọc lại trước khi bỏ cuộc.
+    if (!_hasPermission) await checkPermission();
     if (!_hasPermission) return;
 
     try {

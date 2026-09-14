@@ -71,8 +71,15 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
         private const val FOCUS_RESUME_TIMEOUT_MS = 1500L
         // Số lần giành lại focus tối đa trong một clip — chặn ping-pong vô hạn với app khác.
         private const val MAX_FOCUS_REGAIN_ATTEMPTS = 2
+        // prepareAsync trên HAL lỗi có thể KHÔNG bao giờ gọi lại onPrepared/onError. Cờ
+        // `preparing` khi đó kẹt ở true và mọi lệnh phát sau đều bị chặn ("đang phát") →
+        // máy câm cho tới khi mở lại app. Quá hạn này thì coi như lỗi và dựng player mới.
+        private const val PREPARE_TIMEOUT_MS = 12_000L
 
-        @Volatile var connectionMode: String = "phone_bluetooth"
+        /** Mode dùng khi prefs chưa có giá trị — phải giống SettingsProvider bên Flutter. */
+        const val DEFAULT_CONNECTION_MODE = "android_screen_mode"
+
+        @Volatile var connectionMode: String = DEFAULT_CONNECTION_MODE
         @Volatile var targetDeviceAddress: String = ""
         @Volatile var delaySeconds: Int = 5
         @Volatile var autoPlayEnabled: Boolean = true
@@ -84,13 +91,20 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
         @Volatile var bootGreetingHandled: Boolean = false
 
         private const val GREETING_DEDUP_WINDOW_MS = 8000L
-        // Delay sau khi A2DP sẵn sàng — tối thiểu 3s, user có thể tăng qua delay_seconds.
-        private const val BT_MIN_DELAY_SEC = 3
-        private const val BT_A2DP_POLL_MS = 500L
-        private const val BT_A2DP_WATCH_TIMEOUT_MS = 90_000L
+        // Nhịp chờ TỐI THIỂU sau khi route A2DP đã sẵn sàng, trước khi bấm play. Đủ để đầu xe
+        // chuyển xong nguồn phát mà không bắt người dùng ngồi đợi. Tổng thời gian tính từ lúc
+        // ACL connect vẫn tôn trọng `delay_seconds` của người dùng (xem scheduleDelayedGreeting).
+        private const val BT_MIN_AFTER_A2DP_MS = 1500L
+        private const val BT_A2DP_POLL_MS = 400L
+        // Hết hạn dò A2DP thì KHÔNG bỏ cuộc: phát best-effort nếu xe còn nối (xem startBtA2dpWatch).
+        private const val BT_A2DP_WATCH_TIMEOUT_MS = 45_000L
         // Xe hay flap ACL/A2DP 20–30 phút/lần (radio, sniff mode, HU rẻ). Ngắt ngắn không
         // được tính chuyến mới — chỉ hết phiên khi ngắt đủ lâu (rời xe) rồi mới chào lại.
         private const val BT_SESSION_GRACE_MS = 15 * 60 * 1000L
+        // Trần thời lượng một phiên BT. Cần khi tiến trình bị hệ thống kill GIỮA phiên: lúc đó
+        // không có mốc ACL ngắt nào được ghi, nếu chỉ dựa vào grace thì cờ "đã chào" nằm lại
+        // vĩnh viễn trong prefs và chuyến hôm sau im lặng.
+        private const val BT_SESSION_MAX_MS = 6 * 60 * 60 * 1000L
         private const val PREF_BT_GREETING_PLAYED = "flutter.bt_greeting_played"
         private const val PREF_BT_GREETING_ADDRESS = "flutter.bt_greeting_played_address"
         private const val PREF_BT_GREETING_AT = "flutter.bt_greeting_played_at"
@@ -114,6 +128,11 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
         @Volatile var aaGreetingPlayedThisConnection: Boolean = false
         // Chỉ bật cờ trên khi lời chào do AUTO (không phải bấm nút thủ công).
         @Volatile var pendingAaAutoGreeting: Boolean = false
+        // Mốc (elapsedRealtime) lời chào AA gần nhất và lúc projection kết thúc. Dùng để phân
+        // biệt "rời xe → chuyến mới" với "AA không dây nhấp nháy vài giây rồi nối lại".
+        @Volatile var aaGreetingPlayedAtMs: Long = 0L
+        @Volatile var aaProjectionEndedAtMs: Long = 0L
+        private const val AA_SESSION_GRACE_MS = 15 * 60 * 1000L
 
         // 🟢 BLUETOOTH: một lần chào / phiên (giống AA). Debounce 8s không đủ vì HU flap
         //    ACL sau 20–30 phút và ACTION_BT_WATCH_A2DP từng xóa lastGreetingTriggerAtMs.
@@ -156,6 +175,8 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
     private var btA2dpWatchRunnable: Runnable? = null
     private var btA2dpWatchStartedAtMs: Long = 0L
     private var btA2dpWatchAddress: String = ""
+    /** Mốc ACL connect của phiên hiện tại — giữ lại sau khi huỷ watch để tính delay còn lại. */
+    private var btAclConnectedAtMs: Long = 0L
     private var btSessionEndRunnable: Runnable? = null
     private var btSessionLoaded: Boolean = false
     private var bootGreetingWatchRunnable: Runnable? = null
@@ -187,6 +208,7 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
     private var playbackDurationMs: Long = 0L
     private var focusResumeRunnable: Runnable? = null
     private var playbackWatchdogRunnable: Runnable? = null
+    private var prepareTimeoutRunnable: Runnable? = null
 
     // ==============================
     // Lifecycle
@@ -251,7 +273,10 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
             }
         }
         
-        connectionMode = prefs.getString("flutter.connection_mode", "phone_bluetooth") ?: "phone_bluetooth"
+        // Mặc định phải TRÙNG với SettingsProvider / BootReceiver / BluetoothReceiver. Lệch nhau
+        // thì khi prefs chưa có giá trị, mỗi thành phần hiểu một mode → tự phát nhầm chỗ.
+        connectionMode = prefs.getString("flutter.connection_mode", DEFAULT_CONNECTION_MODE)
+            ?: DEFAULT_CONNECTION_MODE
         targetDeviceAddress = prefs.getString("flutter.target_device_address", "") ?: ""
         
         val allPrefs = prefs.all
@@ -358,10 +383,11 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
             ACTION_AA_WATCH_PROJECTION -> {
                 loadPrefs()
                 if (connectionMode == "phone_android_auto" && autoPlayEnabled) {
-                    // Phiên kết nối AA mới (BT vừa nối) → reset cờ để không bị kẹt từ lần phát cũ/thủ công.
-                    aaGreetingPlayedThisConnection = false
+                    // ⚠️ KHÔNG reset cờ phiên vô điều kiện ở đây. AA không dây bắt tay qua
+                    //    Bluetooth, mà HU hay ngắt/nối lại ACL giữa chuyến — reset thẳng tay
+                    //    thì đang lái tự dưng nghe lại lời chào. Việc hết phiên do
+                    //    expireAaSessionIfStale() quyết định theo thời gian, giống Bluetooth.
                     pendingAaAutoGreeting = false
-                    lastGreetingTriggerAtMs = 0L
                     Log.d("HiCarAA", "BT connected (AA mode) → bắt đầu watch projection")
                     startAaProjectionWatch()
                 }
@@ -370,10 +396,16 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
                 loadPrefs()
                 val address = intent.getStringExtra("deviceAddress") ?: targetDeviceAddress
                 if (connectionMode == "phone_bluetooth" && autoPlayEnabled && address.isNotEmpty()) {
+                    // ⚠️ THỨ TỰ QUAN TRỌNG: phải hỏi "phiên cũ đã hết hạn chưa" TRƯỚC khi gọi
+                    //    cancelBtSessionEnd(). Hàm đó xoá mốc ACL-ngắt (vì xe đang nối lại), mà
+                    //    đúng mốc ấy là căn cứ duy nhất để biết đây là CHUYẾN MỚI. Gọi ngược thứ
+                    //    tự thì cờ "đã chào" của chuyến trước không bao giờ hết hạn → lần kết nối
+                    //    đầu sau khi tiến trình bị kill sẽ im lặng.
+                    val consumed = isBtSessionGreetingConsumed(address)
                     cancelBtSessionEnd()
                     // Reconnect cùng phiên → KHÔNG reset debounce (trước đây = 0 khiến flap ACL
                     // 20–30 phút phát lại lời chào).
-                    if (isBtSessionGreetingConsumed(address)) {
+                    if (consumed) {
                         HiCarDiagnosticLog.d(
                             "HiCarBT",
                             "BT ACL → bỏ qua chào (đã phát phiên này, addr=$address)"
@@ -476,6 +508,10 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
 
     private fun triggerAaGreetingOnce(source: String) {
         cancelAaProjectionWatch()
+        // Projection thắng Bluetooth: nếu luồng BT còn đang chờ/đếm giờ thì huỷ để chỉ một
+        // nguồn phát (người dùng vừa đổi mode, hoặc xe vừa nối BT rồi mới bật Android Auto).
+        cancelBtA2dpWatch()
+        pendingBtAutoGreeting = false
         lastCarConnectionState = CAR_CONNECTION_PROJECTION
         loadPrefs()
         if (connectionMode != "phone_android_auto" || !autoPlayEnabled) return
@@ -507,8 +543,21 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
                     return
                 }
                 if (elapsed > AA_PROJECTION_WATCH_TIMEOUT_MS) {
-                    Log.w("HiCarAA", "AA projection watch timeout (${AA_PROJECTION_WATCH_TIMEOUT_MS}ms)")
                     cancelAaProjectionWatch()
+                    // Không huỷ hẳn hành động: máy chậm / CarConnection lỗi vẫn có thể đang
+                    // chiếu thật. Còn liên kết với xe thì phát best-effort thay vì im lặng.
+                    expireAaSessionIfStale()
+                    if (!aaGreetingPlayedThisConnection &&
+                        BluetoothReceiver.isAddressConnected(this@AudioForegroundService, targetDeviceAddress)
+                    ) {
+                        HiCarDiagnosticLog.w(
+                            "HiCarAA",
+                            "AA projection watch timeout (${AA_PROJECTION_WATCH_TIMEOUT_MS}ms) nhưng xe còn nối → phát best-effort"
+                        )
+                        triggerAaGreetingOnce("aa_timeout_besteffort")
+                    } else {
+                        HiCarDiagnosticLog.w("HiCarAA", "AA projection watch timeout (${AA_PROJECTION_WATCH_TIMEOUT_MS}ms)")
+                    }
                     return
                 }
                 handler.postDelayed(this, AA_PROJECTION_POLL_MS)
@@ -528,6 +577,7 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
         cancelBtA2dpWatch()
         btA2dpWatchAddress = address
         btA2dpWatchStartedAtMs = SystemClock.elapsedRealtime()
+        btAclConnectedAtMs = btA2dpWatchStartedAtMs
         btA2dpWatchRunnable = object : Runnable {
             override fun run() {
                 loadPrefs()
@@ -536,7 +586,7 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
                     return
                 }
                 val elapsed = SystemClock.elapsedRealtime() - btA2dpWatchStartedAtMs
-                if (BluetoothReceiver.isA2dpConnected(this@AudioForegroundService, address)) {
+                if (isBtAudioRouteReady(address)) {
                     if (isBtSessionGreetingConsumed(address)) {
                         HiCarDiagnosticLog.d(
                             "HiCarBT",
@@ -552,14 +602,55 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
                     return
                 }
                 if (elapsed > BT_A2DP_WATCH_TIMEOUT_MS) {
-                    HiCarDiagnosticLog.w("HiCarBT", "A2DP watch timeout (${BT_A2DP_WATCH_TIMEOUT_MS}ms) → skip (màn xe không sẵn sàng?)")
                     cancelBtA2dpWatch()
+                    // KHÔNG bỏ cuộc. Một số màn xe rẻ không bao giờ báo A2DP CONNECTED qua
+                    // getProfileConnectionState / danh sách thiết bị ra, nhưng vẫn nhận audio
+                    // bình thường. Còn liên kết ACL thì cứ phát — im lặng mới là lỗi nặng hơn.
+                    val stillLinked = BluetoothReceiver.isAddressConnected(this@AudioForegroundService, address)
+                    if (stillLinked && !isBtSessionGreetingConsumed(address)) {
+                        HiCarDiagnosticLog.w(
+                            "HiCarBT",
+                            "A2DP watch timeout (${BT_A2DP_WATCH_TIMEOUT_MS}ms) nhưng xe còn nối → phát best-effort"
+                        )
+                        pendingBtAutoGreeting = true
+                        triggerGreetingDebounced(useBootAudio = false, source = "a2dp_timeout_besteffort")
+                    } else {
+                        HiCarDiagnosticLog.w(
+                            "HiCarBT",
+                            "A2DP watch timeout (${BT_A2DP_WATCH_TIMEOUT_MS}ms) → bỏ qua (xe đã rời liên kết)"
+                        )
+                    }
                     return
                 }
                 handler.postDelayed(this, BT_A2DP_POLL_MS)
             }
         }
         handler.post(btA2dpWatchRunnable!!)
+    }
+
+    /**
+     * Đường ra âm thanh của xe đã dựng xong chưa.
+     *
+     * Ghép hai tín hiệu vì không đầu xe nào giống đầu xe nào:
+     *  - Trạng thái profile A2DP (BluetoothAdapter) — chuẩn nhưng vài ROM Trung Quốc báo trễ
+     *    hoặc không bao giờ báo.
+     *  - Danh sách thiết bị PHÁT thực tế của AudioManager — phản ánh đúng nơi tiếng sẽ đi ra.
+     */
+    private fun isBtAudioRouteReady(address: String): Boolean {
+        if (BluetoothReceiver.isA2dpConnected(this, address)) return true
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                audioManager?.getDevices(AudioManager.GET_DEVICES_OUTPUTS)?.any {
+                    it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+                } == true
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager?.isBluetoothA2dpOn == true
+            }
+        } catch (e: Exception) {
+            HiCarDiagnosticLog.w("HiCarBT", "Không đọc được danh sách thiết bị ra: ${e.message}")
+            false
+        }
     }
 
     private fun cancelBtA2dpWatch() {
@@ -582,21 +673,8 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
         btGreetingPlayedAtWallMs = prefs.getLong(PREF_BT_GREETING_AT, 0L)
         btLastAclDisconnectAtWallMs = prefs.getLong(PREF_BT_LAST_DISCONNECT_AT, 0L)
 
-        val now = System.currentTimeMillis()
-        if (btGreetingPlayedThisConnection && btSessionAddress.isNotEmpty()) {
-            val stillLinked = BluetoothReceiver.isAddressConnected(this, btSessionAddress)
-            if (!stillLinked && btLastAclDisconnectAtWallMs == 0L) {
-                btLastAclDisconnectAtWallMs = if (btGreetingPlayedAtWallMs > 0L) btGreetingPlayedAtWallMs else now
-            }
-            if (!stillLinked &&
-                btLastAclDisconnectAtWallMs > 0L &&
-                now - btLastAclDisconnectAtWallMs >= BT_SESSION_GRACE_MS
-            ) {
-                HiCarDiagnosticLog.d("HiCarBT", "BT session hết hạn lúc restore (ngắt đủ lâu) → cho phép chào lần sau")
-                clearBtSession(persist = true)
-                return
-            }
-        }
+        if (btGreetingPlayedThisConnection && expireBtSessionIfStale(btSessionAddress)) return
+
         HiCarDiagnosticLog.d(
             "HiCarBT",
             "BT session restore: played=$btGreetingPlayedThisConnection addr=$btSessionAddress"
@@ -611,21 +689,53 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
             btSessionAddress.equals(address, ignoreCase = true)
     }
 
-    private fun expireBtSessionIfStale(address: String) {
-        if (!btGreetingPlayedThisConnection) return
-        if (btSessionAddress.isNotEmpty() && !btSessionAddress.equals(address, ignoreCase = true)) {
+    /**
+     * Kết thúc phiên BT cũ khi nó đã quá hạn. Trả về true nếu vừa xoá phiên.
+     *
+     * ⚠️ Chỉ xét THỜI GIAN, tuyệt đối không xét "xe có đang kết nối không". Hàm này luôn chạy
+     * đúng lúc ACL vừa nối lại nên điều kiện "chưa kết nối" luôn sai — đó chính là lý do cờ
+     * "đã chào" của chuyến hôm trước sống sót và nuốt mất lời chào của chuyến hôm sau.
+     */
+    private fun expireBtSessionIfStale(address: String): Boolean {
+        if (!btGreetingPlayedThisConnection) return false
+
+        if (address.isNotEmpty() &&
+            btSessionAddress.isNotEmpty() &&
+            !btSessionAddress.equals(address, ignoreCase = true)
+        ) {
             HiCarDiagnosticLog.d("HiCarBT", "BT session đổi xe $btSessionAddress → $address → chào lại")
             clearBtSession(persist = true)
-            return
+            return true
         }
+
         val now = System.currentTimeMillis()
+
+        // Đã ngắt đủ lâu = rời xe → chuyến mới.
         if (btLastAclDisconnectAtWallMs > 0L &&
-            now - btLastAclDisconnectAtWallMs >= BT_SESSION_GRACE_MS &&
-            !BluetoothReceiver.isAddressConnected(this, address)
+            now - btLastAclDisconnectAtWallMs >= BT_SESSION_GRACE_MS
         ) {
             HiCarDiagnosticLog.d("HiCarBT", "BT session hết grace ${BT_SESSION_GRACE_MS}ms → chào lại")
             clearBtSession(persist = true)
+            return true
         }
+
+        // Không có mốc ngắt (tiến trình bị kill giữa phiên) → dùng trần thời lượng phiên.
+        if (btGreetingPlayedAtWallMs > 0L &&
+            now - btGreetingPlayedAtWallMs >= BT_SESSION_MAX_MS
+        ) {
+            HiCarDiagnosticLog.d("HiCarBT", "BT session quá ${BT_SESSION_MAX_MS}ms → chào lại")
+            clearBtSession(persist = true)
+            return true
+        }
+
+        // Đồng hồ hệ thống nhảy lùi (màn độ/box hay sai giờ tới khi bắt được NTP) → mốc cũ vô nghĩa.
+        if (btGreetingPlayedAtWallMs > now + 60_000L) {
+            HiCarDiagnosticLog.w("HiCarBT", "Đồng hồ hệ thống lùi về quá khứ → bỏ phiên BT cũ")
+            clearBtSession(persist = true)
+            return true
+        }
+
+        return false
     }
 
     private fun markBtSessionGreetingPlayed(address: String) {
@@ -880,6 +990,31 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
         }
     }
 
+    /**
+     * Mở cửa cho lời chào Android Auto của CHUYẾN MỚI.
+     *
+     * Cùng nguyên tắc với Bluetooth: một lời chào mỗi phiên, và chỉ tính phiên mới khi đã
+     * rời xe đủ lâu ([AA_SESSION_GRACE_MS] kể từ lúc projection kết thúc) hoặc phiên đã kéo
+     * dài quá [BT_SESSION_MAX_MS] (tiến trình sống dai qua nhiều chuyến).
+     */
+    private fun expireAaSessionIfStale() {
+        if (!aaGreetingPlayedThisConnection) return
+        val now = SystemClock.elapsedRealtime()
+
+        val endedLongAgo = aaProjectionEndedAtMs > 0L &&
+            now - aaProjectionEndedAtMs >= AA_SESSION_GRACE_MS
+        val sessionTooOld = aaGreetingPlayedAtMs > 0L &&
+            now - aaGreetingPlayedAtMs >= BT_SESSION_MAX_MS
+
+        if (endedLongAgo || sessionTooOld) {
+            Log.d("HiCarAA", "Phiên AA cũ hết hạn → cho phép chào chuyến mới")
+            aaGreetingPlayedThisConnection = false
+            aaProjectionEndedAtMs = 0L
+            aaGreetingPlayedAtMs = 0L
+            lastGreetingTriggerAtMs = 0L
+        }
+    }
+
     private fun handleCarConnectionState(state: Int) {
         val previous = lastCarConnectionState
         lastCarConnectionState = state
@@ -904,7 +1039,9 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
                     cancelDelayedPlay()
                     stopPlayback()
                     lastGreetingTriggerAtMs = 0L
-                    aaGreetingPlayedThisConnection = false
+                    // Ghi mốc kết thúc thay vì mở cửa chào lại ngay: projection có thể mất
+                    // vài giây rồi lên lại (AA không dây, đổi nguồn phát trên HU).
+                    aaProjectionEndedAtMs = SystemClock.elapsedRealtime()
                 }
             }
         }
@@ -955,6 +1092,7 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
         loadPrefs()
 
         if (connectionMode == "phone_android_auto") {
+            expireAaSessionIfStale()
             if (aaGreetingPlayedThisConnection) {
                 Log.d("HiCarService", "AA greeting ($source) bỏ qua – đã phát trong phiên kết nối này")
                 return
@@ -963,6 +1101,10 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
 
         if (connectionMode == "phone_bluetooth") {
             val addr = btA2dpWatchAddress.ifEmpty { targetDeviceAddress }
+            // Kiểm tra phiên có thể kết thúc phiên cũ (clearBtSession), mà hàm đó hạ luôn cờ
+            // "lần phát này là tự động". Giữ lại giá trị để lời chào sắp phát vẫn chốt được
+            // phiên mới — mất cờ là lần ACL kế tiếp sẽ chào lần hai.
+            val wasAuto = pendingBtAutoGreeting
             if (isBtSessionGreetingConsumed(addr)) {
                 HiCarDiagnosticLog.d(
                     "HiCarService",
@@ -971,6 +1113,7 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
                 pendingBtAutoGreeting = false
                 return
             }
+            pendingBtAutoGreeting = wasAuto
         }
 
         val now = SystemClock.elapsedRealtime()
@@ -1036,6 +1179,7 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
         cancelBootGreetingWatch()
         cancelBootMissWatchdog()
         cancelBootCompletionFallback()
+        cancelPrepareTimeout()
         handler.removeCallbacksAndMessages(null)
         super.onDestroy()
     }
@@ -1120,9 +1264,19 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
                 HiCarDiagnosticLog.e("HiCarService", "scheduleDelayedGreeting: no valid audio path found")
             }
         }
-        // BT: dùng delay_seconds (tối thiểu 3s). AA: 1.5s.
+        // BT: tôn trọng `delay_seconds` NHƯNG tính từ lúc ACL connect, không phải từ lúc A2DP
+        // sẵn sàng. Trước đây hai khoảng này cộng dồn nên xe nào bắt tay chậm là người dùng
+        // phải đợi gần chục giây mới nghe thấy. AA: 1.5s.
         val effectiveDelay = when {
-            connectionMode == "phone_bluetooth" -> maxOf(delaySeconds.toLong(), BT_MIN_DELAY_SEC.toLong()) * 1000L
+            connectionMode == "phone_bluetooth" -> {
+                val userDelayMs = maxOf(delaySeconds, 0).toLong() * 1000L
+                val sinceAcl = if (btAclConnectedAtMs > 0L) {
+                    SystemClock.elapsedRealtime() - btAclConnectedAtMs
+                } else {
+                    0L
+                }
+                (userDelayMs - sinceAcl).coerceAtLeast(BT_MIN_AFTER_A2DP_MS)
+            }
             else -> 1500L
         }
         HiCarDiagnosticLog.d("HiCarService", "scheduleDelayedGreeting: delay=${effectiveDelay}ms, useBootAudio=$useBootAudio")
@@ -1297,6 +1451,7 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
 
             // prepare() đồng bộ chặn main thread — box yếu dễ ANR. Dùng prepareAsync.
             player.prepareAsync()
+            startPrepareTimeout(isBoxBoot)
         } catch (e: Exception) {
             preparing = false
             HiCarDiagnosticLog.e("HiCarAudio", "Error playing audio: ${e.message}")
@@ -1304,7 +1459,28 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
         }
     }
 
+    /** Gỡ kẹt khi `prepareAsync` không bao giờ gọi lại callback nào (HAL treo). */
+    private fun startPrepareTimeout(isBoxBoot: Boolean) {
+        cancelPrepareTimeout()
+        prepareTimeoutRunnable = Runnable {
+            prepareTimeoutRunnable = null
+            if (!preparing) return@Runnable
+            HiCarDiagnosticLog.e(
+                "HiCarAudio",
+                "prepareAsync quá ${PREPARE_TIMEOUT_MS}ms chưa phản hồi → dựng player mới"
+            )
+            onPlaybackError(-1, -3, isBoxBoot)
+        }
+        handler.postDelayed(prepareTimeoutRunnable!!, PREPARE_TIMEOUT_MS)
+    }
+
+    private fun cancelPrepareTimeout() {
+        prepareTimeoutRunnable?.let { handler.removeCallbacks(it) }
+        prepareTimeoutRunnable = null
+    }
+
     private fun onPlayerPrepared(player: MediaPlayer, type: String, isBoxBoot: Boolean, hadFocus: Boolean) {
+        cancelPrepareTimeout()
         preparing = false
         try {
             val durationMs = player.duration.toLong().coerceAtLeast(0L)
@@ -1338,6 +1514,8 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
                 if (connectionMode == "phone_android_auto" && pendingAaAutoGreeting) {
                     aaGreetingPlayedThisConnection = true
                     pendingAaAutoGreeting = false
+                    aaGreetingPlayedAtMs = SystemClock.elapsedRealtime()
+                    aaProjectionEndedAtMs = 0L
                     Log.d("HiCarAA", "AA auto-greeting started → session flag set")
                 }
                 if (connectionMode == "phone_bluetooth" && pendingBtAutoGreeting) {
@@ -1390,6 +1568,7 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
      * màn độ một lần lỗi là câm cho tới khi mở lại app.
      */
     private fun onPlaybackError(what: Int, extra: Int, isBoxBoot: Boolean) {
+        cancelPrepareTimeout()
         preparing = false
         cancelPlaybackWatchdog()
         cancelFocusResume()
@@ -1506,6 +1685,7 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
     }
 
     private fun releasePlayer() {
+        cancelPrepareTimeout()
         preparing = false
         val player = mediaPlayer ?: return
         mediaPlayer = null
@@ -1542,6 +1722,8 @@ class AudioForegroundService : MediaBrowserServiceCompat() {
         cancelPlaybackWatchdog()
         cancelFocusResume()
         pendingAaAutoGreeting = false
+        // Lời chào tự động chưa kịp phát thì cũng không được tính là "đã chào phiên này".
+        pendingBtAutoGreeting = false
         HiCarDiagnosticLog.d(
             "HiCarAudio",
             "stopPlayback: type=$currentType, pos=${currentPositionSafe()}ms/${playbackDurationMs}ms, releaseOnly=$releaseOnly"

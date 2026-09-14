@@ -68,7 +68,10 @@ class BootReceiver : BroadcastReceiver() {
         HiCarDiagnosticLog.markBootSession()
 
         val prefs = getAvailablePrefs(context)
-        val connectionMode = prefs.getString("flutter.connection_mode", "android_screen_mode") ?: "android_screen_mode"
+        val connectionMode = prefs.getString(
+            "flutter.connection_mode",
+            AudioForegroundService.DEFAULT_CONNECTION_MODE
+        ) ?: AudioForegroundService.DEFAULT_CONNECTION_MODE
 
         if (connectionMode != "android_box_mode") {
             HiCarDiagnosticLog.d("HiCarBoot", "Boot skip – mode=$connectionMode (not box)")

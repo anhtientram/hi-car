@@ -121,12 +121,16 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
 
     // 🟢 Chế độ Android Màn Độ: Khi phát xong thì thu nhỏ app
     _audioProvider.onNativePlaybackComplete = (isManual) {
-      if (_settingsProvider.connectionMode == 'android_screen_mode' &&
-          !isManual) {
+      if (isManual) return;
+      // Đọc mode từ prefs: SettingsProvider.init() là async (có gọi cả method channel),
+      // nếu clip chào kết thúc trước khi init xong thì _settingsProvider.connectionMode
+      // vẫn là giá trị khởi tạo → app không bao giờ thu nhỏ.
+      _currentConnectionMode().then((mode) {
+        if (mode != 'android_screen_mode') return;
         debugPrint(
             'Main: Audio finished in android_screen_mode, minimizing app...');
         ServiceChannel.instance.minimizeApp();
-      }
+      });
     };
 
     _initOverlayListener();
@@ -176,10 +180,16 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     _overlayWatchdog = Timer.periodic(_overlayWatchdogInterval, (_) async {
       // Watchdog CHỈ giữ cửa sổ nút nổi — tuyệt đối không đụng tới phát nhạc.
       // (Việc phát lại lời chào nằm ở nhánh resumed / _maybePlayGreetingOnResume.)
-      if (!_overlayProvider.isBubbleEnabled) return;
+      if (!_overlayProvider.isBubbleWanted) return;
       if (_overlayReshowInFlight) return;
       _overlayReshowInFlight = true;
       try {
+        // Trạng thái quyền có thể đọc hụt lúc máy vừa khởi động (plugin chưa attach).
+        // Đọc lại ở đây để nút nổi vẫn lên sau khi hệ thống ổn định, thay vì im luôn.
+        if (!_overlayProvider.hasPermission) {
+          await _overlayProvider.checkPermission();
+          if (!_overlayProvider.hasPermission) return;
+        }
         final active = await FlutterOverlayWindow.isActive();
         if (!active) {
           debugPrint('Main: Overlay watchdog → nút nổi bị gỡ, hiện lại');
@@ -233,9 +243,17 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     return token != null && token.isNotEmpty;
   }
 
+  /// Chế độ kết nối đang dùng, đọc thẳng prefs để không phụ thuộc thứ tự init async.
+  Future<String> _currentConnectionMode() async {
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getString('connection_mode');
+    if (saved != null && saved.isNotEmpty) return saved;
+    return _settingsProvider.connectionMode;
+  }
+
   /// Phát lại lời chào khi app được mở lại (chỉ áp dụng chế độ Màn Độ + bật "phát khi mở app").
   Future<void> _maybePlayGreetingOnResume() async {
-    if (_settingsProvider.connectionMode != 'android_screen_mode') return;
+    if (await _currentConnectionMode() != 'android_screen_mode') return;
     if (!_settingsProvider.playOnOpen) return;
     // 🟢 Chưa đăng nhập thì không phát (vd: vừa đăng xuất, đang ở màn Login).
     if (!await _isLoggedIn()) return;
@@ -367,10 +385,14 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       return;
     }
 
-    // 🟢 Chế độ Android Box do BootReceiver/Service tự phát ngầm khi Box khởi động.
-    //    Không phát thêm từ Flutter để tránh bị ngắt/phát lại từ đầu hoặc phát lặp.
-    if (_settingsProvider.connectionMode == 'android_box_mode') {
-      debugPrint('Main: Box mode → boot service owns playback, skip on open');
+    // 🟢 MỘT CHỦ SỞ HỮU CHO MỖI SỰ KIỆN TỰ PHÁT.
+    //    Chỉ Màn Độ mới lấy "mở app" làm tín hiệu chào. Bluetooth / Android Auto / Box
+    //    đều do native phát theo sự kiện kết nối (A2DP ready, projection, boot); nếu
+    //    Flutter phát thêm lúc người dùng mở app trong xe thì hai nguồn chồng nhau →
+    //    lời chào bị cắt giữa chừng hoặc phát hai lần.
+    final mode = await _currentConnectionMode();
+    if (mode != 'android_screen_mode') {
+      debugPrint('Main: mode=$mode → native sở hữu auto-play, skip play-on-open');
       return;
     }
 

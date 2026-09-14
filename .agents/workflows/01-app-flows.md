@@ -18,6 +18,14 @@
 1. Nhập tên / biển / hãng → generate (giới hạn lượt)
 2. Nghe thử (just_audio) → set greeting / goodbye → sync native paths
 
+## Chọn lời chào tự động
+
+- Sau `init()` và sau mỗi lần sync: chưa có `greeting_audio_id` mà đã có nhạc → tự chọn
+  (ưu tiên `type=greeting` + đã tải về). Menu ba chấm vẫn dùng để đổi.
+- Người dùng chủ động bỏ đặt → `greeting_cleared_by_user = true`, không tự chọn lại.
+- Đăng nhập lại **cùng tài khoản** giữ nguyên lựa chọn; chỉ đổi `user.id` mới xoá.
+- Không ghi đè `active_greeting.mp3` bằng lời chào dựng sẵn khi danh sách chưa nạp xong.
+
 ## Home
 
 - Phát chào / tạm biệt qua native

@@ -354,11 +354,39 @@ class HiCarPlugin : FlutterPlugin, MethodCallHandler {
         }
     }
 
+    /**
+     * Đưa app về nền để lộ màn hình chính của thiết bị (chế độ Màn Độ, phát xong lời chào).
+     *
+     * `startActivity(CATEGORY_HOME)` KHÔNG đáng tin trên màn độ / box Trung Quốc: nhiều máy
+     * không có activity nào khai báo CATEGORY_HOME (launcher riêng của hãng), hoặc chặn
+     * chuyển launcher từ app khác → lệnh im lặng thất bại và app vẫn nằm trên màn hình.
+     * `moveTaskToBack` là API của chính Activity đang hiển thị nên chạy được ở mọi ROM;
+     * chỉ khi nó từ chối (activity đã bị huỷ) mới rơi về intent HOME như cũ.
+     */
     private fun minimizeApp() {
-        val intent = Intent(Intent.ACTION_MAIN)
-        intent.addCategory(Intent.CATEGORY_HOME)
-        intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-        context.startActivity(intent)
+        mainHandler.post {
+            val movedToBack = try {
+                val activity = MainActivity.instance
+                activity != null && !activity.isFinishing && activity.moveTaskToBack(true)
+            } catch (e: Exception) {
+                android.util.Log.w("HiCarPlugin", "moveTaskToBack lỗi: ${e.message}")
+                false
+            }
+            if (movedToBack) {
+                android.util.Log.i("HiCarPlugin", "minimizeApp: moveTaskToBack OK")
+                return@post
+            }
+            try {
+                val intent = Intent(Intent.ACTION_MAIN).apply {
+                    addCategory(Intent.CATEGORY_HOME)
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                context.startActivity(intent)
+                android.util.Log.i("HiCarPlugin", "minimizeApp: fallback intent HOME")
+            } catch (e: Exception) {
+                HiCarDiagnosticLog.w("HiCarService", "minimizeApp thất bại: ${e.message}")
+            }
+        }
     }
 
     /**
@@ -402,7 +430,8 @@ class HiCarPlugin : FlutterPlugin, MethodCallHandler {
             "startDiscovery" -> result.success(BluetoothReceiver.startDiscovery(context))
             "stopDiscovery"  -> result.success(BluetoothReceiver.stopDiscovery(context))
             "setConnectionMode" -> {
-                val mode = call.argument<String>("mode") ?: "phone_bluetooth"
+                val mode = call.argument<String>("mode")
+                    ?: AudioForegroundService.DEFAULT_CONNECTION_MODE
                 AudioForegroundService.connectionMode = mode
                 context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
                     .edit().putString("flutter.connection_mode", mode).apply()
