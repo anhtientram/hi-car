@@ -25,19 +25,37 @@ class BluetoothProvider extends ChangeNotifier {
   bool get isScanning => _isScanning;
   Map<String, bool> get connectingDevices => _connectingDevices;
 
+  BluetoothDeviceModel? get connectedDevice {
+    for (final device in _pairedDevices) {
+      if (device.isConnected) return device;
+    }
+    return null;
+  }
+
   // ===== Init =====
 
   Future<void> init() async {
     BluetoothChannel.instance.init();
 
-    // Register listener for native connection status updates (Set early to avoid missing events)
     BluetoothChannel.instance
         .setConnectionChangeHandler((address, action) async {
-      await loadPairedDevices();
+      await loadPairedDevices(showSpinner: false);
 
-      // If a device just connected and it matches our target, trigger autoplay if in foreground
       debugPrint(
           'BT Handler: action=$action, incoming=$address, target=${_targetDevice?.address}');
+
+      if (action == 'connected') {
+        // Nối từ Cài đặt hệ thống / màn xe: nhận diện ngay, không bắt user chọn lại trong app.
+        final hadTarget =
+            _targetDevice != null && _targetDevice!.address.isNotEmpty;
+        await adoptConnectedDeviceIfNeeded(incomingAddress: address);
+        // Native có thể đã bỏ qua ACL vì lúc đó chưa có target — bật watch sau khi đã nhận xe.
+        if (!hadTarget &&
+            _targetDevice?.address.toLowerCase() == address.toLowerCase()) {
+          await BluetoothChannel.instance.watchA2dp(address);
+        }
+      }
+
       if (action == 'connected' &&
           _targetDevice?.address.toLowerCase() == address.toLowerCase()) {
         final prefs = await SharedPreferences.getInstance();
@@ -58,11 +76,11 @@ class BluetoothProvider extends ChangeNotifier {
 
     await _loadSavedTarget();
     await loadPairedDevices();
+    await adoptConnectedDeviceIfNeeded();
 
     BluetoothChannel.instance.setDiscoveryHandler((raw) async {
       final device = BluetoothDeviceModel.fromMap(raw);
       debugPrint('Found Bluetooth device: ${device.name} (${device.address})');
-      // Check if already in scanned or paired list
       if (!_pairedDevices.any((d) => d.address == device.address) &&
           !_scannedDevices.any((d) => d.address == device.address)) {
         _scannedDevices.add(device);
@@ -70,24 +88,55 @@ class BluetoothProvider extends ChangeNotifier {
       }
     }, () async {
       _isScanning = false;
-      await loadPairedDevices();
+      await loadPairedDevices(showSpinner: false);
       notifyListeners();
     });
   }
 
+  /// App vừa ra tiền cảnh: đọc lại trạng thái BT (có thể đã nối/ngắt ngoài app).
+  Future<void> refreshOnForeground() async {
+    await loadPairedDevices(showSpinner: false);
+    await adoptConnectedDeviceIfNeeded();
+  }
+
+  /// Nếu chưa chọn xe tự phát mà hệ thống đang nối một thiết bị đã ghép → nhận luôn.
+  Future<void> adoptConnectedDeviceIfNeeded({String? incomingAddress}) async {
+    if (_targetDevice != null && _targetDevice!.address.isNotEmpty) return;
+
+    BluetoothDeviceModel? candidate;
+    if (incomingAddress != null && incomingAddress.isNotEmpty) {
+      candidate = _deviceByAddress(incomingAddress) ??
+          BluetoothDeviceModel(
+            name: incomingAddress,
+            address: incomingAddress,
+            isConnected: true,
+          );
+    } else {
+      candidate = connectedDevice;
+    }
+    if (candidate == null || candidate.address.isEmpty) return;
+
+    debugPrint(
+        'BT: tự nhận thiết bị đang nối ${candidate.name} (${candidate.address})');
+    await setTargetDevice(candidate);
+  }
+
   // ===== Load Paired Devices =====
 
-  Future<void> loadPairedDevices() async {
-    _isLoading = true;
-    _error = null;
-    notifyListeners();
+  Future<void> loadPairedDevices({bool showSpinner = true}) async {
+    if (showSpinner) {
+      _isLoading = true;
+      _error = null;
+      notifyListeners();
+    }
 
     try {
       final rawDevices = await BluetoothChannel.instance.getPairedDevices();
       _pairedDevices = rawDevices.map((raw) {
         final device = BluetoothDeviceModel.fromMap(raw);
         return device.copyWith(
-          isSelected: device.address == (_targetDevice?.address ?? ''),
+          isSelected: device.address.toLowerCase() ==
+              (_targetDevice?.address.toLowerCase() ?? ''),
         );
       }).toList();
     } catch (e) {
@@ -133,21 +182,18 @@ class BluetoothProvider extends ChangeNotifier {
     try {
       if (device.isConnected) {
         await BluetoothChannel.instance.disconnectDevice(address);
-        // Optimistically update to disconnected
         _pairedDevices = _pairedDevices
             .map((d) =>
                 d.address == address ? d.copyWith(isConnected: false) : d)
             .toList();
         notifyListeners();
       } else {
-        // Automatically mark as target device when attempting connection
         await setTargetDevice(device);
         await BluetoothChannel.instance.connectDevice(address);
       }
 
-      // Refresh list to sync with native reality
       await Future.delayed(const Duration(milliseconds: 2000));
-      await loadPairedDevices();
+      await loadPairedDevices(showSpinner: false);
     } catch (_) {
     } finally {
       _connectingDevices.remove(address);
@@ -158,19 +204,17 @@ class BluetoothProvider extends ChangeNotifier {
   // ===== Set Target Device =====
 
   Future<void> setTargetDevice(BluetoothDeviceModel device) async {
-    _targetDevice = device;
+    _targetDevice = device.copyWith(isSelected: true);
 
-    // Update selected state in list
     _pairedDevices = _pairedDevices.map((d) {
-      return d.copyWith(isSelected: d.address == device.address);
+      return d.copyWith(
+          isSelected: d.address.toLowerCase() == device.address.toLowerCase());
     }).toList();
 
-    // Save to prefs
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(AppConstants.keyTargetDeviceAddress, device.address);
     await prefs.setString(AppConstants.keyTargetDeviceName, device.name);
 
-    // Send to native
     await BluetoothChannel.instance.setTargetDevice(
       address: device.address,
       delay: _delaySeconds,
@@ -199,7 +243,6 @@ class BluetoothProvider extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt(AppConstants.keyDelaySeconds, seconds);
 
-    // Resend to native if target is already set
     if (_targetDevice != null) {
       await BluetoothChannel.instance.setTargetDevice(
         address: _targetDevice!.address,
@@ -223,5 +266,12 @@ class BluetoothProvider extends ChangeNotifier {
           BluetoothDeviceModel(name: name, address: address, isSelected: true);
     }
     notifyListeners();
+  }
+
+  BluetoothDeviceModel? _deviceByAddress(String address) {
+    for (final device in _pairedDevices) {
+      if (device.address.toLowerCase() == address.toLowerCase()) return device;
+    }
+    return null;
   }
 }

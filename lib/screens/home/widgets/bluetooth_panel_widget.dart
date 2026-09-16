@@ -26,11 +26,13 @@ class _BluetoothPanelWidgetState extends State<BluetoothPanelWidget> {
             color: AppColors.card,
             borderRadius: BorderRadius.circular(16.r),
             border: Border.all(
-              color: btProvider.hasTargetDevice
+              color: (btProvider.connectedDevice != null ||
+                      btProvider.hasTargetDevice)
                   ? AppColors.primary
                   : AppColors.border,
             ),
-            boxShadow: btProvider.hasTargetDevice
+            boxShadow: (btProvider.connectedDevice != null ||
+                    btProvider.hasTargetDevice)
                 ? [
                     BoxShadow(
                       color: AppColors.primary,
@@ -78,11 +80,10 @@ class _BluetoothPanelWidgetState extends State<BluetoothPanelWidget> {
                             ),
                             SizedBox(height: 2.h),
                             Text(
-                              btProvider.hasTargetDevice
-                                  ? '${btProvider.targetDevice!.name} · ${btProvider.delaySeconds}s delay'
-                                  : 'Chưa chọn thiết bị',
+                              _headerSubtitle(btProvider),
                               style: TextStyle(
-                                color: btProvider.hasTargetDevice
+                                color: btProvider.connectedDevice != null ||
+                                        btProvider.hasTargetDevice
                                     ? AppColors.primary
                                     : AppColors.textHint,
                                 fontSize: 11.sp,
@@ -118,6 +119,21 @@ class _BluetoothPanelWidgetState extends State<BluetoothPanelWidget> {
       },
     );
   }
+}
+
+String _headerSubtitle(BluetoothProvider provider) {
+  final connected = provider.connectedDevice;
+  if (connected != null) {
+    final isTarget = provider.targetDevice?.address.toLowerCase() ==
+        connected.address.toLowerCase();
+    return isTarget
+        ? '${connected.name} · Đã kết nối · tự phát'
+        : '${connected.name} · Đã kết nối';
+  }
+  if (provider.hasTargetDevice) {
+    return '${provider.targetDevice!.name} · Chưa kết nối · ${provider.delaySeconds}s';
+  }
+  return 'Chưa chọn thiết bị';
 }
 
 class _BluetoothExpandedContent extends StatefulWidget {
@@ -246,6 +262,19 @@ class _BluetoothExpandedContentState extends State<_BluetoothExpandedContent> {
 
         SizedBox(height: 8.h),
 
+        Padding(
+          padding: EdgeInsets.symmetric(horizontal: 16.w),
+          child: Text(
+            'Tự phát = xe được chào khi nối. Kết nối / Ngắt chỉ bật tắt Bluetooth.',
+            style: TextStyle(
+              color: AppColors.textHint,
+              fontSize: 10.sp,
+            ),
+          ),
+        ),
+
+        SizedBox(height: 8.h),
+
         if (provider.pairedDevices.isEmpty && !provider.isLoading)
           Padding(
             padding: EdgeInsets.symmetric(horizontal: 16.w, vertical: 12.h),
@@ -267,9 +296,9 @@ class _BluetoothExpandedContentState extends State<_BluetoothExpandedContent> {
             return _DeviceItem(
               device: device,
               isConnecting: isConnecting,
-              onTap: () => provider.toggleDeviceConnection(device),
-              onClear: provider.hasTargetDevice &&
-                      provider.targetDevice?.address == device.address
+              onConnectToggle: () => provider.toggleDeviceConnection(device),
+              onSetAutoPlay: () => provider.setTargetDevice(device),
+              onClearAutoPlay: device.isSelected
                   ? () => provider.clearTargetDevice()
                   : null,
             );
@@ -348,7 +377,8 @@ class _BluetoothExpandedContentState extends State<_BluetoothExpandedContent> {
             return _DeviceItem(
               device: device,
               isConnecting: isConnecting,
-              onTap: () => provider.toggleDeviceConnection(device),
+              onConnectToggle: () => provider.toggleDeviceConnection(device),
+              onSetAutoPlay: () => provider.setTargetDevice(device),
             );
           }),
 
@@ -361,155 +391,177 @@ class _BluetoothExpandedContentState extends State<_BluetoothExpandedContent> {
 class _DeviceItem extends StatelessWidget {
   final BluetoothDeviceModel device;
   final bool isConnecting;
-  final VoidCallback onTap;
-  final VoidCallback? onClear;
+  final VoidCallback onConnectToggle;
+  final VoidCallback onSetAutoPlay;
+  final VoidCallback? onClearAutoPlay;
 
   const _DeviceItem({
     required this.device,
     required this.isConnecting,
-    required this.onTap,
-    this.onClear,
+    required this.onConnectToggle,
+    required this.onSetAutoPlay,
+    this.onClearAutoPlay,
   });
 
   @override
   Widget build(BuildContext context) {
-    String statusText = '';
-    Color statusColor = AppColors.textHint;
-    Widget? trailingWidget;
-
+    final String statusText;
+    final Color statusColor;
     if (isConnecting) {
       statusText = device.isConnected ? 'Đang ngắt...' : 'Đang kết nối...';
       statusColor = AppColors.primary;
-      trailingWidget = PremiumLoading(size: 14.w, strokeWidth: 2);
     } else if (device.isConnected) {
       statusText = 'Đã kết nối';
       statusColor = AppColors.success;
-      trailingWidget = Container(
-        padding: EdgeInsets.symmetric(horizontal: 8.w, vertical: 3.h),
-        decoration: BoxDecoration(
-          color: AppColors.error.withOpacity(0.8),
-          borderRadius: BorderRadius.circular(8.r),
-        ),
-        child: Text(
-          'Ngắt kết nối',
-          style: TextStyle(
-            color: Colors.white,
-            fontSize: 10.sp,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-      );
     } else {
       statusText = 'Chưa kết nối';
       statusColor = AppColors.textHint;
-      trailingWidget = Container(
-        padding: EdgeInsets.symmetric(horizontal: 8.w, vertical: 3.h),
-        decoration: BoxDecoration(
-          color: AppColors.primary.withOpacity(0.1),
-          borderRadius: BorderRadius.circular(8.r),
-          border: Border.all(color: AppColors.primary.withOpacity(0.3)),
-        ),
-        child: Text(
-          'Kết nối',
-          style: TextStyle(
-            color: AppColors.primary,
-            fontSize: 10.sp,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-      );
     }
 
-    return InkWell(
-      onTap: isConnecting ? null : onTap,
-      child: Padding(
-        padding: EdgeInsets.symmetric(horizontal: 16.w, vertical: 10.h),
-        child: Row(
-          children: [
-            Icon(
-              device.isConnected
-                  ? Icons.bluetooth_connected_rounded
-                  : Icons.bluetooth_rounded,
-              color: device.isSelected ? AppColors.primary : AppColors.textHint,
-              size: 18.sp,
+    return Padding(
+      padding: EdgeInsets.symmetric(horizontal: 16.w, vertical: 10.h),
+      child: Row(
+        children: [
+          Icon(
+            device.isConnected
+                ? Icons.bluetooth_connected_rounded
+                : Icons.bluetooth_rounded,
+            color: device.isSelected || device.isConnected
+                ? AppColors.primary
+                : AppColors.textHint,
+            size: 18.sp,
+          ),
+          SizedBox(width: 12.w),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  device.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: device.isSelected
+                        ? AppColors.textPrimary
+                        : AppColors.textSecondary,
+                    fontSize: 13.sp,
+                    fontWeight:
+                        device.isSelected ? FontWeight.w600 : FontWeight.w400,
+                  ),
+                ),
+                SizedBox(height: 2.h),
+                Text(
+                  '${device.address}  ·  $statusText',
+                  style: TextStyle(
+                    color: statusColor,
+                    fontSize: 10.sp,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                SizedBox(height: 8.h),
+                Row(
+                  children: [
+                    if (device.isSelected)
+                      _AutoPlayBadge(onClear: onClearAutoPlay)
+                    else
+                      _SmallActionChip(
+                        label: 'Tự phát',
+                        filled: false,
+                        onTap: isConnecting ? null : onSetAutoPlay,
+                      ),
+                    const Spacer(),
+                    if (isConnecting)
+                      PremiumLoading(size: 14.w, strokeWidth: 2)
+                    else
+                      _SmallActionChip(
+                        label: device.isConnected ? 'Ngắt' : 'Kết nối',
+                        filled: device.isConnected,
+                        danger: device.isConnected,
+                        onTap: onConnectToggle,
+                      ),
+                  ],
+                ),
+              ],
             ),
-            SizedBox(width: 12.w),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          device.name,
-                          style: TextStyle(
-                            color: device.isSelected
-                                ? AppColors.textPrimary
-                                : AppColors.textSecondary,
-                            fontSize: 13.sp,
-                            fontWeight: device.isSelected
-                                ? FontWeight.w600
-                                : FontWeight.w400,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ),
-                      if (device.isSelected) ...[
-                        SizedBox(width: 6.w),
-                        Container(
-                          padding: EdgeInsets.symmetric(
-                              horizontal: 6.w, vertical: 2.h),
-                          decoration: BoxDecoration(
-                            color: AppColors.success,
-                            borderRadius: BorderRadius.circular(6.r),
-                          ),
-                          child: Text(
-                            'Tự phát',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 9.sp,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                  SizedBox(height: 2.h),
-                  Row(
-                    children: [
-                      Text(
-                        device.address,
-                        style: TextStyle(
-                          color: AppColors.textHint,
-                          fontSize: 10.sp,
-                        ),
-                      ),
-                      Text(
-                        '  ·  $statusText',
-                        style: TextStyle(
-                          color: statusColor,
-                          fontSize: 10.sp,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AutoPlayBadge extends StatelessWidget {
+  final VoidCallback? onClear;
+
+  const _AutoPlayBadge({this.onClear});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.success,
+        borderRadius: BorderRadius.circular(8.r),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: EdgeInsets.only(left: 8.w, top: 4.h, bottom: 4.h),
+            child: Text(
+              'Đang tự phát',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 10.sp,
+                fontWeight: FontWeight.bold,
               ),
             ),
-            SizedBox(width: 10.w),
-            trailingWidget,
-            if (device.isSelected && onClear != null && !isConnecting) ...[
-              SizedBox(width: 8.w),
-              GestureDetector(
-                onTap: onClear,
-                child: Icon(Icons.close_rounded,
-                    color: AppColors.textSecondary, size: 16.sp),
-              ),
-            ],
-          ],
+          ),
+          IconButton(
+            onPressed: onClear,
+            tooltip: 'Bỏ tự phát',
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: BoxConstraints(minWidth: 32.w, minHeight: 32.w),
+            icon: Icon(Icons.close_rounded, color: Colors.white, size: 16.sp),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SmallActionChip extends StatelessWidget {
+  final String label;
+  final bool filled;
+  final bool danger;
+  final VoidCallback? onTap;
+
+  const _SmallActionChip({
+    required this.label,
+    required this.filled,
+    this.danger = false,
+    this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = danger ? AppColors.error : AppColors.primary;
+    return Material(
+      color: filled ? color : color.withValues(alpha: 0.12),
+      borderRadius: BorderRadius.circular(8.r),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8.r),
+        child: Padding(
+          padding: EdgeInsets.symmetric(horizontal: 10.w, vertical: 6.h),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: filled ? Colors.white : color,
+              fontSize: 10.sp,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
         ),
       ),
     );

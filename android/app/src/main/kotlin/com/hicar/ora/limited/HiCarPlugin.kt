@@ -424,9 +424,25 @@ class HiCarPlugin : FlutterPlugin, MethodCallHandler {
                 AudioForegroundService.delaySeconds = call.argument<Int>("delay") ?: 5
                 result.success(true)
             }
+            "watchA2dp" -> {
+                val address = call.argument<String>("address")
+                    ?: AudioForegroundService.targetDeviceAddress
+                val intent = buildServiceIntent(AudioForegroundService.ACTION_BT_WATCH_A2DP)
+                intent.putExtra("deviceAddress", address)
+                startServiceSafe(intent)
+                result.success(true)
+            }
             "clearTargetDevice" -> { AudioForegroundService.targetDeviceAddress = ""; result.success(true) }
             "connectDevice" -> BluetoothReceiver.connectDevice(context, call.argument<String>("address") ?: "") { result.success(it) }
-            "disconnectDevice" -> BluetoothReceiver.disconnectDevice(context, call.argument<String>("address") ?: "") { result.success(it) }
+            "disconnectDevice" -> {
+                val address = call.argument<String>("address") ?: ""
+                // Ngắt trong app = rời phiên chủ động. Nếu chỉ chờ ACL_DISCONNECTED thì cờ
+                // "đã chào" còn giữ vài giây (chống flap), lần bấm Connect ngay sau sẽ im lặng.
+                startServiceSafe(
+                    buildServiceIntent(AudioForegroundService.ACTION_BT_END_SESSION)
+                )
+                BluetoothReceiver.disconnectDevice(context, address) { result.success(it) }
+            }
             "startDiscovery" -> result.success(BluetoothReceiver.startDiscovery(context))
             "stopDiscovery"  -> result.success(BluetoothReceiver.stopDiscovery(context))
             "setConnectionMode" -> {

@@ -104,6 +104,16 @@ class BluetoothChannel {
     }
   }
 
+  /// Native đợi A2DP rồi phát lời chào (dùng khi vừa tự nhận xe nối từ ngoài app).
+  Future<void> watchA2dp(String address) async {
+    try {
+      await _channel.invokeMethod('watchA2dp', {'address': address});
+    } on PlatformException catch (e) {
+      AppLogger.instance
+          .log('Lỗi Bluetooth watchA2dp: ${e.message}', type: 'native_error');
+    }
+  }
+
   /// Initiates A2DP/Headset connection via reflection
   Future<bool> connectDevice(String address) async {
     try {

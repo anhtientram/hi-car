@@ -7,12 +7,41 @@ import android.bluetooth.BluetoothProfile
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.util.Log
 import android.os.Build
+import java.util.Collections
 
 class BluetoothReceiver : BroadcastReceiver() {
 
     companion object {
+        /** Địa chỉ đang ACL-connected — bổ sung khi `BluetoothDevice.isConnected()` ẩn bị ROM chặn. */
+        private val aclConnectedAddresses = Collections.synchronizedSet(mutableSetOf<String>())
+        private const val PREF_ACL_CONNECTED = "bt_acl_connected_addresses"
+
+        private fun rememberAcl(context: Context, address: String, connected: Boolean) {
+            val key = address.uppercase()
+            if (connected) aclConnectedAddresses.add(key) else aclConnectedAddresses.remove(key)
+            try {
+                val prefs = context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+                val persisted = prefs.getStringSet(PREF_ACL_CONNECTED, emptySet())?.toMutableSet() ?: mutableSetOf()
+                if (connected) persisted.add(key) else persisted.remove(key)
+                prefs.edit().putStringSet(PREF_ACL_CONNECTED, persisted).apply()
+            } catch (_: Exception) {
+            }
+        }
+
+        private fun persistedAclContains(context: Context, address: String): Boolean {
+            return try {
+                val prefs = context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+                prefs.getStringSet(PREF_ACL_CONNECTED, emptySet())
+                    ?.any { it.equals(address, ignoreCase = true) } == true
+            } catch (_: Exception) {
+                false
+            }
+        }
+
         /**
          * Returns list of paired Bluetooth devices as maps for Flutter MethodChannel.
          */
@@ -25,7 +54,7 @@ class BluetoothReceiver : BroadcastReceiver() {
                     mapOf(
                         "name" to (device.name ?: "Unknown Device"),
                         "address" to device.address,
-                        "isConnected" to isDeviceConnected(device)
+                        "isConnected" to isDeviceConnected(context, device)
                     )
                 } ?: emptyList()
             } catch (e: SecurityException) {
@@ -34,13 +63,46 @@ class BluetoothReceiver : BroadcastReceiver() {
         }
 
         /**
-         * Check if a classic Bluetooth device is connected using reflection.
+         * Classic BT đã nối hay chưa. Ghép nhiều tín hiệu vì `isConnected()` là API ẩn,
+         * vài ROM Trung Quốc / Android 12+ trả false dù xe đang phát nhạc.
          */
-        private fun isDeviceConnected(device: BluetoothDevice): Boolean {
-            return try {
+        private fun isDeviceConnected(context: Context, device: BluetoothDevice): Boolean {
+            val address = device.address ?: return false
+            if (aclConnectedAddresses.contains(address.uppercase())) return true
+            try {
                 val method = device.javaClass.getMethod("isConnected")
-                method.invoke(device) as? Boolean ?: false
-            } catch (e: Exception) {
+                if (method.invoke(device) as? Boolean == true) return true
+            } catch (_: Exception) {
+            }
+            if (matchesAudioRoute(context, address)) return true
+            try {
+                val bluetoothManager =
+                    context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+                val adapter = bluetoothManager?.adapter
+                if (adapter != null) {
+                    val a2dp = adapter.getProfileConnectionState(BluetoothProfile.A2DP) ==
+                        BluetoothProfile.STATE_CONNECTED
+                    val headset = adapter.getProfileConnectionState(BluetoothProfile.HEADSET) ==
+                        BluetoothProfile.STATE_CONNECTED
+                    if ((a2dp || headset) && persistedAclContains(context, address)) return true
+                    if ((a2dp || headset) && adapter.bondedDevices?.count() == 1) return true
+                }
+            } catch (_: Exception) {
+            }
+            return persistedAclContains(context, address) &&
+                matchesAudioRoute(context, address)
+        }
+
+        private fun matchesAudioRoute(context: Context, address: String): Boolean {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return false
+            return try {
+                val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return false
+                am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)?.any { info ->
+                    (info.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                        info.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) &&
+                        info.address.equals(address, ignoreCase = true)
+                } == true
+            } catch (_: Exception) {
                 false
             }
         }
@@ -51,7 +113,7 @@ class BluetoothReceiver : BroadcastReceiver() {
                 val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
                 val adapter = bluetoothManager?.adapter ?: return false
                 val device = adapter.getRemoteDevice(address) ?: return false
-                isDeviceConnected(device)
+                isDeviceConnected(context, device)
             } catch (e: Exception) {
                 false
             }
@@ -80,7 +142,7 @@ class BluetoothReceiver : BroadcastReceiver() {
                         val state = adapter.getProfileConnectionState(BluetoothProfile.A2DP)
                         // getProfileConnectionState là trạng thái tổng hợp của profile; kết hợp với
                         // isConnected của đúng device để chắc chắn đúng xe đã nối.
-                        if (state == BluetoothProfile.STATE_CONNECTED && isDeviceConnected(device)) {
+                        if (state == BluetoothProfile.STATE_CONNECTED && isDeviceConnected(context, device)) {
                             return true
                         }
                     } catch (_: Exception) {
@@ -223,6 +285,18 @@ class BluetoothReceiver : BroadcastReceiver() {
 
             callback(true)
         }
+
+        private fun startService(context: Context, action: String, extras: (Intent.() -> Unit)? = null) {
+            val serviceIntent = Intent(context, AudioForegroundService::class.java).apply {
+                this.action = action
+                extras?.invoke(this)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(serviceIntent)
+            } else {
+                context.startService(serviceIntent)
+            }
+        }
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -239,6 +313,21 @@ class BluetoothReceiver : BroadcastReceiver() {
     }
 
     private fun handleReceive(context: Context, intent: Intent) {
+        if (intent.action == BluetoothAdapter.ACTION_STATE_CHANGED) {
+            val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+            if (state == BluetoothAdapter.STATE_OFF || state == BluetoothAdapter.STATE_TURNING_OFF) {
+                HiCarDiagnosticLog.d("HiCarBT", "Bluetooth adapter tắt → đóng phiên chào")
+                aclConnectedAddresses.clear()
+                try {
+                    context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+                        .edit().remove(PREF_ACL_CONNECTED).apply()
+                } catch (_: Exception) {
+                }
+                startService(context, AudioForegroundService.ACTION_BT_END_SESSION)
+            }
+            return
+        }
+
         val device: BluetoothDevice? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
         } else {
@@ -283,8 +372,14 @@ class BluetoothReceiver : BroadcastReceiver() {
             }
             else -> {
                 val actionStr = when (intent.action) {
-                    BluetoothDevice.ACTION_ACL_CONNECTED -> "connected"
-                    BluetoothDevice.ACTION_ACL_DISCONNECTED -> "disconnected"
+                    BluetoothDevice.ACTION_ACL_CONNECTED -> {
+                        rememberAcl(context, deviceAddress, true)
+                        "connected"
+                    }
+                    BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
+                        rememberAcl(context, deviceAddress, false)
+                        "disconnected"
+                    }
                     else -> intent.action ?: "unknown"
                 }
 
@@ -334,6 +429,12 @@ class BluetoothReceiver : BroadcastReceiver() {
                 HiCarDiagnosticLog.d("HiCarBT", "ACL Disconnected: $deviceAddress mode=$connectionMode")
                 // AA không dây: BT handshake có thể ngắt/nối lại TRƯỚC khi projection xong → không dừng nhạc
                 // theo BT. Chỉ dừng khi CarConnection=0 (service). Bluetooth mode: dừng đúng xe mục tiêu.
+                if (connectionMode == "phone_android_auto") {
+                    // Nhiều máy không bắn CarConnection=0 khi ngắt AA không dây. Phải đếm hết phiên
+                    // từ ACL, nếu không lần nối sau bị nuốt vì cờ "đã chào".
+                    startService(context, AudioForegroundService.ACTION_AA_LINK_LOST)
+                    return
+                }
                 val shouldStop = connectionMode == "phone_bluetooth" &&
                     targetAddress.isNotEmpty() &&
                     deviceAddress.equals(targetAddress, ignoreCase = true)

@@ -15,10 +15,12 @@ Prefs key: `connection_mode`. Mặc định = `android_screen_mode` ở **cả**
 - Match target BT device before auto-play (`target_device_address`).
 - BT delay đếm **từ lúc ACL connect**, không cộng thêm sau khi A2DP sẵn sàng:
   `max(delay_seconds - elapsedSinceAcl, BT_MIN_AFTER_A2DP_MS)`.
-- BT greeting: **one play per session**. ACL flap 20–30 min later must not replay. Keep session
-  for ~15 min after ACL disconnect (leave car = new session).
-- Hết phiên phải quyết định **thuần theo thời gian** (grace từ lúc ngắt, hoặc `BT_SESSION_MAX_MS`),
+- BT greeting: **one play per session**. ACL flap vài giây (radio/sniff) must not replay.
+  Ngắt thật (disconnect trong app, tắt Bluetooth, rời xe > ~8s) **phải** chào lần nối sau.
+- Hết phiên phải quyết định **thuần theo thời gian** (flap window từ lúc ngắt, hoặc `BT_SESSION_MAX_MS`),
   không phụ thuộc `isAddressConnected` — lúc kiểm tra thì xe vừa nối lại nên luôn true.
+- Disconnect chủ động (`disconnectDevice` / adapter OFF) gọi `ACTION_BT_END_SESSION` ngay,
+  không chờ flap window — nếu không, lần Connect kế tiếp trong app sẽ im lặng.
 - Đọc cờ "đã chào phiên này" **trước** khi gọi `cancelBtSessionEnd()` (hàm đó xoá mốc ngắt).
 - Do **not** reset `lastGreetingTriggerAtMs` on every `ACTION_BT_WATCH_A2DP`.
 - Watch A2DP / projection hết timeout mà xe còn nối → phát **best-effort**, không huỷ action.
@@ -26,7 +28,10 @@ Prefs key: `connection_mode`. Mặc định = `android_screen_mode` ở **cả**
   `AudioManager.getDevices()` tìm `TYPE_BLUETOOTH_A2DP`.
 - AA: if BT flow running when projection starts → cancel BT delayed play, switch AA.
 - AA không dây bắt tay qua BT nên ACL hay nhấp nháy: **không** reset cờ phiên AA khi nhận
-  `ACTION_AA_WATCH_PROJECTION`; hết phiên theo `AA_SESSION_GRACE_MS` kể từ lúc projection dừng.
+  `ACTION_AA_WATCH_PROJECTION`. Ngắt projection vài giây = cùng phiên; ngắt > ~8s thì chào
+  lần nối sau. Không giữ phiên 15 phút.
+- AA tự phát phải `resolveGreetingPath()` (prefs + `hicar_audio/active_greeting.mp3` + boot
+  file). Prefs trống lúc vừa bind không được im lặng.
 - Box: Direct Boot prefs + `boot_*.mp3`; FGS type `specialUse` when started from boot (API 34+).
 - Screen mode: hibernate/resume preferred over cold boot; don't rely only on `BOOT_COMPLETED`.
 - Screen mode minimize = `Activity.moveTaskToBack(true)`; HOME intent chỉ là fallback (nhiều

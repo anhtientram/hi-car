@@ -2,6 +2,8 @@
 
 | Ngày | File | Tóm tắt |
 |------|------|---------|
+| 2026-09-16 | [2026-09-16-aa-reconnect-silent.md](2026-09-16-aa-reconnect-silent.md) | AA lần 2 im lặng: path rỗng lúc bind + phiên 15 phút |
+| 2026-09-16 | [2026-09-16-bt-reconnect-silent.md](2026-09-16-bt-reconnect-silent.md) | BT reconnect trong app / ngoài app im lặng vì phiên 15 phút — đóng phiên khi disconnect chủ động |
 | 2026-09-14 | [2026-09-14-multi-mode-hardening.md](2026-09-14-multi-mode-hardening.md) | BT chào ngay lần đầu, AA không chào lại giữa chuyến, giữ lời chào sau đăng nhập lại, tự đặt lời chào, màn độ về home + giữ bong bóng, iOS hết báo lỗi giả |
 | 2026-09-03 | [2026-09-03-bt-repeat-greeting.md](2026-09-03-bt-repeat-greeting.md) | BT phone: không chào lại khi ACL flap 20–30 phút (một lần/phiên + grace 15p) |
 | 2026-08-31 | [2026-08-31-playback-cut-fix.md](2026-08-31-playback-cut-fix.md) | Fix nhạc cắt 2–3s (focus + MediaPlayer retry) + tải file an toàn + Demo Beta UI |

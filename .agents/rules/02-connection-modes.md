@@ -10,11 +10,11 @@ Mặc định `connection_mode` = `android_screen_mode` (Dart và Kotlin phải 
 3. Delay đếm từ lúc ACL connect: `max(delay_seconds - đã trôi, 1.5s)` → phát ngay khi kịp
 4. Phát lời chào **một lần / phiên** → stop → nhả focus
 5. Chỉ phát khi đúng `target_device_address`
-6. ACL ngắt rồi nối lại trong ~15 phút (HU flap 20–30p) **không** chào lại; rời xe lâu hơn thì
-   chào chuyến mới
-7. Hết phiên xét thuần theo thời gian — dựa vào trạng thái kết nối sẽ luôn sai vì hàm chỉ chạy
+6. ACL ngắt rồi nối lại trong ~8 giây (HU flap) **không** chào lại
+7. Ngắt thật — bấm disconnect trong app, tắt Bluetooth, hoặc rời xe > ~8s — thì lần nối sau **phải** chào
+8. Hết phiên xét thuần theo thời gian — dựa vào trạng thái kết nối sẽ luôn sai vì hàm chỉ chạy
    đúng lúc vừa nối lại
-8. Watch A2DP timeout mà ACL còn sống → phát best-effort, không huỷ
+9. Watch A2DP timeout mà ACL còn sống → phát best-effort, không huỷ
 
 Flutter **không** phát song song khi BT connect.
 
@@ -22,8 +22,9 @@ Flutter **không** phát song song khi BT connect.
 
 - Có dây / không dây qua CarConnection (+ fallback gearhead)
 - App = media app (MediaSession + FGS mediaPlayback)
-- Một lần chào / phiên projection; hết phiên sau 15p kể từ lúc projection dừng
+- Một lần chào / phiên projection; hết phiên sau ~8s kể từ lúc projection dừng (không phải 15p)
 - AA không dây nhấp nháy ACL giữa chuyến **không** được reset cờ phiên
+- Prefs path trống thì vẫn tìm `active_greeting.mp3` / boot file, thử lại 2s
 - Nếu BT đang schedule → hủy, chuyển AA
 - Máy chậm: đợi hết watch rồi vẫn phát best-effort nếu còn nối
 

@@ -10,6 +10,7 @@ import '../../core/utils/ui_utils.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/audio_provider.dart';
 import '../../providers/overlay_provider.dart';
+import '../../providers/bluetooth_provider.dart';
 import 'widgets/audio_list_widget.dart';
 import 'widgets/bluetooth_panel_widget.dart';
 import 'widgets/permission_status_widget.dart';
@@ -62,6 +63,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _checkAll();
+      context.read<BluetoothProvider>().refreshOnForeground();
       // 🟢 KHÔNG tự phát lại lời chào ở chế độ Box khi resume.
       //    Box do BootReceiver/Service phát ngầm khi Box khởi động — nếu phát thêm
       //    ở đây sẽ gây "đang phát bị ngắt rồi phát lại từ đầu" hoặc "phát xong lại
