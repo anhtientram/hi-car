@@ -1,0 +1,24 @@
+---
+description: Android Box boot auto-play — car restart plays greeting in background without opening the app
+globs: android/**/BootReceiver.kt,android/**/BootSessionManager.kt,android/**/AudioForegroundService.kt,android/**/HiCarPlugin.kt,lib/main.dart
+alwaysApply: false
+---
+
+# Android Box (`android_box_mode`)
+
+Physical box plugged into the factory screen (mini PC). Car off/on → box reboots → **auto play in background**. Do not require the Flutter UI.
+
+## Must
+
+- Owner = native only: `BootReceiver` → FGS `ACTION_PLAY_GREETING_DELAYED` + `ACTION_BOOT_RETRY_GREETING`. Flutter `_initPlayOnOpen` **skips** this mode.
+- Copy `boot_greeting.mp3` to **device-protected** storage while the app is open (`HiCarPlugin`). Direct Boot cannot read credential prefs.
+- Identify a new boot via `BOOT_COUNT` then kernel `boot_id` — **not** wall-clock (many boxes have no RTC; clock rewind would skip forever).
+- Poll audio focus (warm ~2s, cold wait). Slow box → keep waiting / alarm retry 15s·40s·90s. Do not cancel the boot greeting.
+- Boot-started FGS uses type `specialUse` (API 34+). Other modes keep `mediaPlayback`.
+- One greeting per **boot session**. Do not mark complete if playback never actually started.
+
+## Don't
+
+- Treat Box like màn độ (no play-on-open, overlay is not the auto-play path).
+- Start FGS `mediaPlayback` from `BOOT_COMPLETED` on API 35.
+- Reuse a completed session across a real new boot.

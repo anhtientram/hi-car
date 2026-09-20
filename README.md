@@ -1,16 +1,27 @@
-# hi_car
+# Giọng Thương Gia (hi_car)
 
-A new Flutter project.
+Flutter + Kotlin + Swift — lời chào / tạm biệt xe tự động.
 
-## Getting Started
+**Baseline ổn định: v7** (store version trên branch này: `1.0.14+17`).
 
-This project is a starting point for a Flutter application.
+## Tài liệu cho agent & dev
 
-A few resources to get you started if this is your first Flutter project:
+Bắt đầu tại [`AGENTS.md`](AGENTS.md).
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+| | |
+|--|--|
+| Kiến trúc / path code | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
+| Cursor rules | [`.cursor/rules/`](.cursor/rules/) |
+| Cursor skills | [`.cursor/skills/`](.cursor/skills/) |
+| Nghiệp vụ `.agents` | [`.agents/README.md`](.agents/README.md) |
+| Hướng dẫn dùng | [`docs/HUONG_DAN_SU_DUNG.md`](docs/HUONG_DAN_SU_DUNG.md) |
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+## Dev nhanh
+
+```bash
+flutter pub get
+flutter run
+flutter build apk --debug
+```
+
+Package: `com.hicar.ora.limited`

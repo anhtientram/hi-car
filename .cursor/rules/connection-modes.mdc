@@ -1,0 +1,32 @@
+---
+description: v7 auto-play contracts — Bluetooth, Android Auto, màn độ overlay, Android Box boot, CarPlay Shortcuts
+alwaysApply: true
+---
+
+# Connection modes (v7)
+
+Prefs: `connection_mode`. One owner per event. **Wait, don’t cancel.**
+
+| Value | Owner |
+|-------|--------|
+| `phone_bluetooth` | Native `ACTION_BT_WATCH_A2DP` — wait A2DP, then play (or keep waiting) |
+| `phone_android_auto` | Native CarConnection / gearhead + MediaSession — not the BT flow |
+| `android_screen_mode` | Flutter play-on-open / resume; overlay on back |
+| `android_box_mode` | Native `BootReceiver` + Direct Boot file + poll/alarms — Flutter must not play on open |
+| `ios_carplay` | App Intents from Shortcuts (CarPlay **or** Bluetooth connect) |
+
+## Contracts (do not regress)
+
+- **Bluetooth (Android + iOS):** on connect, play immediately **or wait until the route is ready**. Never fail because the head unit / phone is slow.
+- **Android Auto (wired + wireless):** after connect, play like today. Slow cars wait. Do **not** drop the pending greeting because a watch timed out.
+- **Màn độ overlay:** cold start next day → open app → play → back → bubble appears. Bubble **stays** if the user opens YouTube or any other app.
+- **CarPlay:** greeting already set → user configures CarPlay automation **or** Bluetooth automation → on connect, play immediately or wait.
+- **Android Box:** USB/HDMI box on the factory screen. Car restart (including overnight) → play greeting **in background**. Slow box waits / retries. Never require opening the Flutter UI.
+
+## Ownership notes
+
+- Match `target_device_address` before Android BT auto-play.
+- User `delay_seconds` after A2DP is ready (min ~3s on Android BT).
+- AA must not be implemented as “just Bluetooth connected”.
+- Screen mode: hibernate/resume preferred; overlay hide **only** when **this** app is `resumed`.
+- Box: not screen-mode. Session id from `BOOT_COUNT` / `boot_id` (no RTC). Boot FGS type `specialUse`. Details: `.cursor/rules/android-box.mdc`.

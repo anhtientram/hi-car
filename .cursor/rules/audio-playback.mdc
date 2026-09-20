@@ -1,0 +1,29 @@
+---
+description: Native MediaPlayer / AVAudioPlayer, audio focus, wait-until-ready
+globs: android/**/*.kt,ios/**/*.swift,lib/providers/audio_provider.dart,lib/native/**/*.dart
+alwaysApply: false
+---
+
+# Audio playback (v7)
+
+Primary Android: `AudioForegroundService.kt` (`HiCarAudio` / `HiCarService`). iOS: `HiCarAudioPlayer` in `AppDelegate.swift`.
+
+## Must
+
+- New `MediaPlayer` each play; `prepareAsync`; `setWakeMode`; never reuse after `MEDIA_ERROR_SERVER_DIED`.
+- On error: `release` → null → retry with new player.
+- Short greeting: `AUDIOFOCUS_LOSS` must **not** hard-`stopPlayback()` if clip not ~90% done — re-request / continue.
+- `LOSS_TRANSIENT`: pause + resume; if focus never returns, best-effort resume.
+- Connect/play watches (A2DP, AA projection, **box boot poll**): if the device is slow, **keep waiting** and play when ready. Do not treat timeout as “cancel forever”.
+- Log focus / stop / retry via `HiCarDiagnosticLog`.
+
+## Don't
+
+- `requestAudioFocus` synchronously inside the focus callback (post to Handler).
+- `release()` MediaPlayer inside its own error/completion callback (post).
+- Cancel `ACTION_BT_WATCH_A2DP` / `ACTION_AA_WATCH_PROJECTION` / `ACTION_BOOT_RETRY_GREETING` just because elapsed time looks long.
+
+## Flutter / iOS
+
+- `playGreetingViaNative` may fall back to bundled asset if the active file is missing.
+- iOS Shortcuts call App Intents with `openAppWhenRun = false`; session `.playback` must already be configured.

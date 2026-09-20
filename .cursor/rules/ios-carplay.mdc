@@ -1,0 +1,28 @@
+---
+description: iOS CarPlay and Bluetooth Shortcuts auto-play — play immediately or wait
+globs: ios/**/*.swift,lib/screens/setup/connection_mode_screen.dart,lib/screens/setup/permission_config_screen.dart
+alwaysApply: false
+---
+
+# iOS CarPlay + Bluetooth automation
+
+Mode key: `ios_carplay`. Playback: `HiCarAudioPlayer` + App Intents (`PlayGreetingIntent` / `PlayGoodbyeIntent`).
+
+## User path
+
+1. User sets greeting in-app (pin `greeting_audio_path` in UserDefaults `flutter.*`).
+2. User opens Shortcuts → Personal Automation → **CarPlay “When Connected”** **or** **Bluetooth “When device connects”**.
+3. Action: **Phát lời chào HiCar**. Ask Before Running = off.
+4. On connect: play immediately, or wait until the audio session/route to the car is ready. Do not fail/skip.
+
+## Must
+
+- Intents run in background (`openAppWhenRun = false`).
+- `AVAudioSession` category `.playback` configured at launch and before play.
+- Same greeting file for CarPlay automation and Bluetooth automation — do not require a second in-app setup.
+- If the car audio route is not ready yet, wait/retry — do not return success-without-sound or abort.
+
+## Don't
+
+- Treat iOS Bluetooth as Android `phone_bluetooth` (no A2DP watch / no target device picker).
+- Require the Flutter UI to be in foreground for Shortcuts playback.

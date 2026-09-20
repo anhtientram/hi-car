@@ -1,0 +1,23 @@
+---
+description: Màn độ floating bubble — restore after overnight reboot, survive YouTube
+globs: lib/overlay/**/*.dart,lib/providers/overlay_provider.dart,lib/main.dart,android/**/OverlayBridge.kt,android/**/MainActivity.kt
+alwaysApply: false
+---
+
+# Overlay keep-alive (màn độ)
+
+Target flow: **tắt xe → hôm sau mở lại → vào app → phát nhạc xong → back ra → bong bóng hiện**. Bubble must **keep showing** if the customer opens YouTube or any other app.
+
+## Must
+
+- `overlayMain` stays in `lib/main.dart` (AOT release cannot find it elsewhere).
+- Show overlay on `AppLifecycleState.paused` (user backed out). Hide **only** on `resumed` of **this** app.
+- Do not hide/close overlay because another app gained audio focus (YouTube, radio, Maps).
+- FGS + overlay service stay alive after background; survive clear-from-recents when bubble is enabled.
+- After cold boot, overlay is restored by the user opening the app then leaving it — do not depend on `BOOT_COMPLETED` alone for screen mode.
+
+## Don't
+
+- Close overlay in `inactive` (notification shade / transient).
+- Tie overlay lifetime to MediaPlayer / audio focus.
+- Disable bubble just because playback finished.
