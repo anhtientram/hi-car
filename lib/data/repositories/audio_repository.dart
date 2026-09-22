@@ -41,12 +41,28 @@ class AudioRepository {
     final greetingId = prefs.getString(AppConstants.keyGreetingAudioId) ?? '';
     final goodbyeId = prefs.getString(AppConstants.keyGoodbyeAudioId) ?? '';
 
-    final updated = audioList.map((a) {
+    var updated = audioList.map((a) {
       return a.copyWith(
         isActiveGreeting: a.id == greetingId,
         isActiveGoodbye: a.id == goodbyeId,
       );
     }).toList();
+
+    // Nếu người dùng chưa có nhạc chào, tự chọn một audio vừa đồng bộ.
+    // Khi đã có lựa chọn, tuyệt đối giữ nguyên để sync không đổi cấu hình của người dùng.
+    if (greetingId.isEmpty && updated.isNotEmpty) {
+      final greeting = updated.firstWhere(
+        (audio) => audio.type == AudioType.greeting,
+        orElse: () => updated.first,
+      );
+
+      await prefs.setString(AppConstants.keyGreetingAudioId, greeting.id);
+      updated = updated
+          .map((audio) => audio.copyWith(
+                isActiveGreeting: audio.id == greeting.id,
+              ))
+          .toList();
+    }
 
     await saveLocalList(updated);
     return updated;
