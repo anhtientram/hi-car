@@ -28,7 +28,7 @@ object BootSessionManager {
     private const val BOOT_INCREMENT_DEBOUNCE_MS = 60_000L
 
     const val BOOT_RETRY_ALARM_REQUEST_BASE = 100
-    const val BOOT_RETRY_ALARM_COUNT = 3
+    const val BOOT_RETRY_ALARM_COUNT = 5
 
     /** Số lần phát "best-effort" (chưa xin được audio focus) tối đa mỗi phiên boot.
      *  Giới hạn để: (1) box HAL chậm vẫn được thử lại khi có focus; (2) box không bao giờ

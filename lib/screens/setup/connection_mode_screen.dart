@@ -45,7 +45,7 @@ class _ConnectionModeScreenState extends State<ConnectionModeScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Trên iPhone, ứng dụng hoạt động cùng CarPlay. Khi điện thoại kết nối với xe, âm thanh sẽ tự phát ra loa xe.',
+                  'Trên iPhone, ứng dụng hoạt động cùng CarPlay. Khi điện thoại kết nối với xe, âm thanh sẽ tự phát ra loa xe. Tự động hóa không mở app cần iOS 16 trở lên; iOS cũ có thể cần mở app thủ công.',
                   style: TextStyle(
                     color: AppColors.textSecondary,
                     fontSize: 14.sp,

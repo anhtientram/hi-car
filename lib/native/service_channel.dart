@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../core/constants.dart';
 import '../core/logger.dart';
+import '../core/utils/device_utils.dart';
 
 /// Flutter → Kotlin bridge for AudioForegroundService control
 class ServiceChannel {
@@ -23,9 +24,22 @@ class ServiceChannel {
       } else if (call.method == 'onNativeError') {
         final message =
             call.arguments?.toString() ?? 'Lỗi không xác định từ Native';
+        final prefs = await SharedPreferences.getInstance();
+        final device = await DeviceUtils.getDeviceContext();
         AppLogger.instance.log(
           'LỖI NATIVE: $message',
           type: 'native_error',
+          userMessage:
+              'Thiết bị hoặc kết nối xe vừa báo lỗi. Hãy thử lại hoặc gửi báo cáo.',
+          requiresAction: true,
+          details: {
+            'source': 'native_method_channel',
+            'native_message': message,
+            'mode': prefs.getString('connection_mode') ?? 'unknown',
+            'device_name': device['device_name'],
+            'device_model': device['device_model'],
+            'os_version': device['os_version'],
+          },
         );
       }
     });
@@ -83,6 +97,28 @@ class ServiceChannel {
         type: 'native_error',
       );
       rethrow;
+    }
+  }
+
+  /// Tạo playback job mới từ incident popup. Android Box đi lại qua Boot/session
+  /// owner; các mode còn lại gửi play greeting bình thường.
+  Future<bool> retryGreeting({String? audioPath}) async {
+    try {
+      final result = await _channel.invokeMethod<bool>(
+        'retryGreeting',
+        {'audioPath': audioPath ?? ''},
+      );
+      return result ?? false;
+    } catch (e) {
+      AppLogger.instance.log(
+        'Không tạo được playback retry: $e',
+        type: 'native_error',
+        userMessage:
+            'Không thể thử lại lúc này. Hãy kiểm tra quyền và kết nối xe.',
+        requiresAction: true,
+        details: {'error': e.toString()},
+      );
+      return false;
     }
   }
 
@@ -238,7 +274,8 @@ class ServiceChannel {
 
   Future<String> getDiagnosticLogFull() async {
     try {
-      final result = await _channel.invokeMethod<String>('getDiagnosticLogFull');
+      final result =
+          await _channel.invokeMethod<String>('getDiagnosticLogFull');
       return result ?? '';
     } catch (e) {
       debugPrint('ServiceChannel: getDiagnosticLogFull error: $e');
@@ -269,8 +306,11 @@ class ServiceChannel {
       if (raw.trim().isEmpty) return;
 
       final prefs = await SharedPreferences.getInstance();
-      final importedList = prefs.getStringList(_kImportedDiagKeys) ?? <String>[];
+      final importedList =
+          prefs.getStringList(_kImportedDiagKeys) ?? <String>[];
       final importedSet = importedList.toSet();
+      final mode = prefs.getString('connection_mode') ?? 'unknown';
+      final device = await DeviceUtils.getDeviceContext();
 
       var added = 0;
       for (final line in raw.split('\n')) {
@@ -284,10 +324,22 @@ class ServiceChannel {
 
         importedSet.add(key);
         importedList.add(key);
+        final isHardError =
+            line.contains(' E HiCar') || line.contains('BOOT_PLAYBACK_MISSED');
         AppLogger.instance.log(
           _readableNativeLine(line),
           type: _mapNativeLineType(line),
-          details: {'source': 'native_diagnostic'},
+          userMessage: _userMessageForNativeLine(line),
+          incidentId: 'native-${key.hashCode}',
+          requiresAction: isHardError,
+          details: {
+            'source': 'native_diagnostic',
+            'mode': mode,
+            'device_name': device['device_name'],
+            'device_model': device['device_model'],
+            'os_version': device['os_version'],
+            'native_line': line,
+          },
         );
         added++;
       }
@@ -298,7 +350,8 @@ class ServiceChannel {
             ? importedList.sublist(importedList.length - 200)
             : importedList;
         await prefs.setStringList(_kImportedDiagKeys, bounded);
-        debugPrint('ServiceChannel: importNativeDiagnostics → +$added thẻ lỗi native');
+        debugPrint(
+            'ServiceChannel: importNativeDiagnostics → +$added thẻ lỗi native');
       }
     } catch (e) {
       debugPrint('ServiceChannel: importNativeDiagnostics error: $e');
@@ -313,13 +366,38 @@ class ServiceChannel {
     return 'native_error';
   }
 
+  String _userMessageForNativeLine(String line) {
+    final lower = line.toLowerCase();
+    if (lower.contains('permission') || lower.contains('securityexception')) {
+      return 'Thiết bị đang thiếu quyền cần thiết để kết nối hoặc phát nhạc. Hãy mở phần Quyền ứng dụng và kiểm tra lại.';
+    }
+    if (lower.contains('a2dp')) {
+      return 'Bluetooth đã kết nối nhưng đường tiếng A2DP của xe chưa sẵn sàng.';
+    }
+    if (lower.contains('projection') || lower.contains('gearhead')) {
+      return 'Android Auto chưa sẵn sàng để phát qua hệ thống xe.';
+    }
+    if (lower.contains('file does not exist') ||
+        lower.contains('no valid audio')) {
+      return 'Không tìm thấy file nhạc chào trên thiết bị. Hãy mở app và đồng bộ lại audio.';
+    }
+    if (lower.contains('boot') || lower.contains('direct boot')) {
+      return 'Android Box chưa phát được lời chào sau khi khởi động.';
+    }
+    if (lower.contains('mediaplayer') || lower.contains('audio')) {
+      return 'Thiết bị gặp lỗi khi phát âm thanh. Bạn có thể gửi log để kiểm tra model và hệ điều hành.';
+    }
+    return 'Ứng dụng không hoàn tất được thao tác phát nhạc. Bạn có thể gửi báo lỗi để kiểm tra thiết bị này.';
+  }
+
   /// Rút gọn dòng adb thành thông điệp dễ đọc: "[Lỗi · HiCarBoot] nội dung".
   String _readableNativeLine(String line) {
     final tagMatch = RegExp(r'\b(HiCar\w*|OverlayBridge)\b').firstMatch(line);
     final tag = tagMatch?.group(1) ?? 'Native';
     final level = line.contains(' E HiCar') ? 'Lỗi' : 'Cảnh báo';
     final colonIdx = line.indexOf('$tag: ');
-    final body = colonIdx >= 0 ? line.substring(colonIdx + tag.length + 2) : line;
+    final body =
+        colonIdx >= 0 ? line.substring(colonIdx + tag.length + 2) : line;
     return '[$level · $tag] ${body.trim()}';
   }
 
@@ -334,7 +412,8 @@ class ServiceChannel {
   /// Inject sample adb-style native log lines for bug-report UI testing.
   Future<void> appendDiagnosticDemo(String scenario) async {
     try {
-      await _channel.invokeMethod('appendDiagnosticDemo', {'scenario': scenario});
+      await _channel
+          .invokeMethod('appendDiagnosticDemo', {'scenario': scenario});
     } catch (e) {
       debugPrint('ServiceChannel: appendDiagnosticDemo error: $e');
     }

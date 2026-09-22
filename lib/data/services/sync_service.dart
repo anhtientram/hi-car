@@ -53,6 +53,7 @@ class SyncService {
           }
         }
       }
+
       if (cachedJson != null) {
         addToPool(AudioModel.fromJsonList(cachedJson));
       }
@@ -86,7 +87,7 @@ class SyncService {
             '${audioDir.path}/${audioModel.id}.mp3',
           };
           for (final candidate in candidates) {
-            if (await File(candidate).exists()) {
+            if (await _isValidAudioFile(File(candidate))) {
               localPath = candidate;
               needsDownload = false;
               break;
@@ -138,6 +139,10 @@ class SyncService {
       AppLogger.instance.log(
         'Lỗi đồng bộ: $e',
         type: 'sync_error',
+        userMessage:
+            'Không thể đồng bộ nhạc từ máy chủ. Hãy kiểm tra mạng rồi thử lại.',
+        requiresAction: true,
+        details: {'error': e.toString()},
       );
       rethrow;
     }
@@ -150,32 +155,66 @@ class SyncService {
     String? contentHash,
   }) async {
     final destPath = _localPathFor(audioId, contentHash, audioDir.path);
+    final partPath = '$destPath.part';
     // ignore: avoid_print
     print('📥 ĐANG TẢI FILE: $url -> $destPath');
 
     try {
+      // Không bao giờ ghi trực tiếp vào file đang được player dùng. File .part
+      // giúp app không nhìn thấy một MP3 nửa chừng sau khi mạng/box bị ngắt.
+      final partFile = File(partPath);
+      if (await partFile.exists()) {
+        await partFile.delete();
+      }
+
       if (url.startsWith('mock://')) {
         // Handle mock fallback for demo
         final byteData =
             await rootBundle.load('assets/audio/audio_default.MP3');
-        final file = File(destPath);
-        await file.writeAsBytes(byteData.buffer.asUint8List(), flush: true);
+        await partFile.writeAsBytes(byteData.buffer.asUint8List(), flush: true);
       } else {
         // Real HTTP Download
         await _dio.download(
           url,
-          destPath,
+          partPath,
           options: Options(
             headers: {'Accept': 'application/json'},
+            receiveTimeout: const Duration(seconds: 45),
+            sendTimeout: const Duration(seconds: 20),
+            responseType: ResponseType.bytes,
           ),
+          deleteOnError: true,
         );
       }
+
+      if (!await _isValidAudioFile(partFile)) {
+        throw const FormatException(
+            'File audio tải về không hợp lệ hoặc bị rỗng');
+      }
+
+      final destination = File(destPath);
+      if (await destination.exists()) {
+        await destination.delete();
+      }
+      await partFile.rename(destPath);
+      AppLogger.instance.log(
+        'Tải audio thành công: $audioId (${destination.lengthSync()} bytes)',
+        type: 'download_complete',
+        details: {'audioId': audioId, 'path': destPath},
+      );
       return destPath;
     } catch (e) {
       print('Download error: $e');
+      try {
+        final partFile = File(partPath);
+        if (await partFile.exists()) await partFile.delete();
+      } catch (_) {
+        // Không che lỗi gốc khi dọn file tạm thất bại.
+      }
       AppLogger.instance.log(
         'Lỗi tải file: $url',
         type: 'download_error',
+        userMessage: 'Không tải được file nhạc. Vui lòng thử đồng bộ lại.',
         details: {'url': url, 'error': e.toString()},
       );
       return null;
@@ -198,7 +237,7 @@ class SyncService {
   /// Checks if a file exists on disk.
   Future<bool> fileExists(String? path) async {
     if (path == null) return false;
-    return File(path).exists();
+    return _isValidAudioFile(File(path));
   }
 
   String _localPathFor(String audioId, String? hash, String dirPath) {
@@ -220,7 +259,7 @@ class SyncService {
       '${audioDir.path}/${audio.id}.mp3',
     };
     for (final candidate in candidates) {
-      if (await File(candidate).exists()) return candidate;
+      if (await _isValidAudioFile(File(candidate))) return candidate;
     }
     return null;
   }
@@ -230,6 +269,37 @@ class SyncService {
     try {
       final file = File(path);
       if (await file.exists()) await file.delete();
-    } catch (_) {}
+    } catch (e) {
+      AppLogger.instance.log(
+        'Không xoá được file audio local',
+        type: 'storage_error',
+        details: {'path': path, 'error': e.toString()},
+      );
+    }
+  }
+
+  /// Kiểm tra tối thiểu để không đưa file HTML/JSON hoặc file đang tải dở vào player.
+  /// Không khóa cứng vào một codec duy nhất vì server có thể trả MP3, WAV, M4A hoặc OGG.
+  Future<bool> _isValidAudioFile(File file) async {
+    try {
+      if (!await file.exists() || await file.length() < 128) return false;
+      final handle = await file.open();
+      try {
+        final header = await handle.read(12);
+        if (header.length < 4) return false;
+        final ascii = String.fromCharCodes(header);
+        final isId3 = ascii.startsWith('ID3');
+        final isRiff = ascii.startsWith('RIFF') && ascii.contains('WAVE');
+        final isFlac = ascii.startsWith('fLaC');
+        final isOgg = ascii.startsWith('OggS');
+        final isMp4 = ascii.substring(4).contains('ftyp');
+        final isMp3Frame = header[0] == 0xFF && (header[1] & 0xE0) == 0xE0;
+        return isId3 || isRiff || isFlac || isOgg || isMp4 || isMp3Frame;
+      } finally {
+        await handle.close();
+      }
+    } catch (_) {
+      return false;
+    }
   }
 }

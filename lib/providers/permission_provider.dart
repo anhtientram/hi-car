@@ -4,6 +4,7 @@ import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'dart:io';
 import '../native/service_channel.dart';
+import '../core/logger.dart';
 
 class PermissionStatus {
   final bool bluetooth;
@@ -101,7 +102,15 @@ class PermissionProvider extends ChangeNotifier {
             true, // System permission usually, we just track if we should show it
         backgroundPersistence: true,
       );
-    } catch (_) {}
+    } catch (e, stack) {
+      AppLogger.instance.log(
+        'Không kiểm tra được đầy đủ quyền hệ thống: $e',
+        type: 'permission_error',
+        userMessage:
+            'Không thể kiểm tra một số quyền của thiết bị. Hãy mở phần Quyền hệ thống để kiểm tra lại.',
+        details: {'error': e.toString(), 'stack': stack.toString()},
+      );
+    }
 
     _isChecking = false;
     notifyListeners();

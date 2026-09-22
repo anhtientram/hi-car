@@ -55,9 +55,8 @@ class AudioProvider extends ChangeNotifier {
   }
 
   List<AudioModel> get audioList {
-    final mappedList = _audioList
-        .where((a) => a.id != AppConstants.defaultGoodbyeId)
-        .map((a) {
+    final mappedList =
+        _audioList.where((a) => a.id != AppConstants.defaultGoodbyeId).map((a) {
       return a.copyWith(
         isActiveGreeting: _activeGreetingId == a.id,
         isActiveGoodbye: _effectiveGoodbyeId == a.id,
@@ -358,6 +357,17 @@ class AudioProvider extends ChangeNotifier {
 
     if (path == null || path.isEmpty) {
       debugPrint('AudioProvider: No active greeting found');
+      final prefs = await SharedPreferences.getInstance();
+      AppLogger.instance.log(
+        'Không có file nhạc chào để phát',
+        type: 'incident_error',
+        userMessage:
+            'Chưa có nhạc chào hợp lệ trên thiết bị. Hãy đồng bộ nhạc hoặc chọn lại nhạc chào.',
+        requiresAction: true,
+        details: {
+          'mode': prefs.getString('connection_mode') ?? 'unknown',
+        },
+      );
       return false;
     }
 
@@ -383,7 +393,16 @@ class AudioProvider extends ChangeNotifier {
       AppLogger.instance.log(
         'Lỗi phát lời chào (Native): $e',
         type: 'native_playback_error',
-        details: {'path': path, 'error': e.toString()},
+        userMessage:
+            'Thiết bị không phát được nhạc chào. Hãy kiểm tra quyền âm thanh và kết nối xe.',
+        requiresAction: true,
+        details: {
+          'path': path,
+          'error': e.toString(),
+          'mode': (await SharedPreferences.getInstance())
+                  .getString('connection_mode') ??
+              'unknown',
+        },
       );
       _stopNativePlaybackState();
       if (allowAutostartRetry) {
@@ -415,6 +434,16 @@ class AudioProvider extends ChangeNotifier {
 
     if (path == null || path.isEmpty) {
       debugPrint('AudioProvider: No active goodbye found');
+      final prefs = await SharedPreferences.getInstance();
+      AppLogger.instance.log(
+        'Không có file nhạc tạm biệt để phát',
+        type: 'incident_error',
+        userMessage: 'Chưa có file nhạc tạm biệt hợp lệ trên thiết bị.',
+        requiresAction: true,
+        details: {
+          'mode': prefs.getString('connection_mode') ?? 'unknown',
+        },
+      );
       return false;
     }
 
@@ -438,7 +467,16 @@ class AudioProvider extends ChangeNotifier {
       AppLogger.instance.log(
         'Lỗi phát lời tạm biệt (Native): $e',
         type: 'native_playback_error',
-        details: {'path': path, 'error': e.toString()},
+        userMessage:
+            'Thiết bị không phát được nhạc tạm biệt. Hãy kiểm tra kết nối xe.',
+        requiresAction: true,
+        details: {
+          'path': path,
+          'error': e.toString(),
+          'mode': (await SharedPreferences.getInstance())
+                  .getString('connection_mode') ??
+              'unknown',
+        },
       );
       _stopNativePlaybackState();
       return false;
@@ -472,7 +510,10 @@ class AudioProvider extends ChangeNotifier {
             '⚠️ [AudioProvider] Watchdog triggered: Force stopping animation');
         AppLogger.instance.log(
           'Watchdog kích hoạt: Force stop animation (Native)',
-          type: 'native_warning',
+          type: 'native_playback_error',
+          userMessage:
+              'Ứng dụng không nhận được tín hiệu phát nhạc hoàn tất từ thiết bị.',
+          requiresAction: true,
         );
         _stopNativePlaybackState(isManual: false);
       }

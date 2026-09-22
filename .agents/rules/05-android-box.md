@@ -10,7 +10,7 @@ Khi khởi động lại xe (tắt máy rồi nổ lại, kể cả qua đêm) �
 
 | Được | Không được |
 |------|------------|
-| `BootReceiver` → FGS delayed greeting + alarm 15s / 40s / 90s | Flutter `_initPlayOnOpen` / resume play |
+| `BootReceiver` → FGS delayed greeting + alarm 15s / 40s / 90s / 180s / 360s | Flutter `_initPlayOnOpen` / resume play |
 | File `boot_greeting.mp3` vùng device-protected | Chỉ dựa `BOOT_COMPLETED` một lần rồi bỏ |
 | Session theo `BOOT_COUNT` / kernel `boot_id` | Debounce theo đồng hồ tường (box hay **không có RTC**) |
 

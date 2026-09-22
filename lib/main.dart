@@ -7,12 +7,14 @@ import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:flutter_easyloading/flutter_easyloading.dart';
 import 'package:hi_car/core/app_colors.dart';
 import 'package:hi_car/overlay/overlay_main.dart';
+import 'package:hi_car/widgets/incident_overlay.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'core/app_theme.dart';
 import 'core/app_router.dart';
 import 'core/constants.dart';
 import 'core/utils/ui_utils.dart';
+import 'core/logger.dart';
 import 'native/service_channel.dart';
 import 'data/services/remote_config_service.dart';
 import 'providers/auth_provider.dart';
@@ -25,6 +27,35 @@ import 'providers/studio_provider.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await AppLogger.instance.init();
+
+  FlutterError.onError = (details) {
+    FlutterError.presentError(details);
+    AppLogger.instance.log(
+      'Flutter framework error: ${details.exceptionAsString()}',
+      type: 'incident_error',
+      userMessage:
+          'Ứng dụng gặp lỗi nội bộ. Bạn có thể gửi báo cáo để kiểm tra thiết bị này.',
+      requiresAction: true,
+      details: {
+        'library': details.library,
+        'context': details.context?.toDescription(),
+        'stack': details.stack?.toString(),
+      },
+    );
+  };
+  PlatformDispatcher.instance.onError = (error, stack) {
+    AppLogger.instance.log(
+      'Unhandled Dart error: $error',
+      type: 'incident_error',
+      userMessage:
+          'Ứng dụng gặp lỗi không xác định. Bạn có thể gửi báo cáo để kiểm tra thiết bị này.',
+      requiresAction: true,
+      details: {'error': error.toString(), 'stack': stack.toString()},
+    );
+    return true;
+  };
+
   // Lấy Base URL động từ remote config TRƯỚC khi dựng app để mọi request dùng
   // đúng domain (domain cũ đã ngừng hoạt động).
   await RemoteConfigService.instance.load();
@@ -329,20 +360,33 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       return;
     }
 
-    int retryCount = 0;
-    while (_audioProvider.audioList.isEmpty && retryCount < 10) {
-      debugPrint('Main: Audio list empty, waiting... ($retryCount)');
-      await Future.delayed(const Duration(milliseconds: 1000));
-      retryCount++;
-    }
+    // Sync có thể chậm hơn 10 giây trên box/OS cũ. Dùng backoff và chờ đến khi
+    // có audio greeting thực sự, không coi timeout tạm thời là "không có nhạc".
+    var retryCount = 0;
+    while (!_hasTriggeredOpenGreeting) {
+      if (!_settingsProvider.playOnOpen ||
+          _settingsProvider.connectionMode == 'android_box_mode' ||
+          !await _isLoggedIn()) {
+        return;
+      }
 
-    if (_audioProvider.audioList.isNotEmpty) {
-      debugPrint('Main: Triggering play greeting on open...');
-      _hasTriggeredOpenGreeting = true;
-      await _audioProvider.playGreetingViaNative(allowAutostartRetry: true);
-    } else {
+      final prefs = await SharedPreferences.getInstance();
+      final persistedPath = prefs.getString('greeting_audio_path');
+      final hasGreeting = _audioProvider.activeGreeting != null ||
+          (persistedPath != null && persistedPath.isNotEmpty);
+
+      if (hasGreeting) {
+        debugPrint('Main: Triggering play greeting on open...');
+        _hasTriggeredOpenGreeting = true;
+        await _audioProvider.playGreetingViaNative(allowAutostartRetry: true);
+        return;
+      }
+
+      final waitSeconds = <int>[1, 2, 4, 8, 15, 30, 60][retryCount.clamp(0, 6)];
       debugPrint(
-          'Main: Could not trigger greeting - list still empty after 10s');
+          'Main: chưa có greeting sau sync, tiếp tục chờ ${waitSeconds}s (attempt=$retryCount)');
+      retryCount++;
+      await Future.delayed(Duration(seconds: waitSeconds));
     }
   }
 
@@ -377,7 +421,10 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
                 theme: AppTheme.dark,
                 scaffoldMessengerKey: rootScaffoldMessengerKey,
                 routerConfig: AppRouter.router,
-                builder: EasyLoading.init(),
+                builder: (context, child) {
+                  final loadingChild = EasyLoading.init()(context, child);
+                  return IncidentOverlay(child: loadingChild);
+                },
               );
             },
           );

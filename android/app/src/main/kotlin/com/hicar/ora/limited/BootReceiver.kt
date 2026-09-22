@@ -18,9 +18,14 @@ import java.io.File
 class BootReceiver : BroadcastReceiver() {
 
     companion object {
-        /** Retry boot greeting sau 15s / 40s / 90s nếu box khởi động chậm hoặc audio subsystem chưa sẵn sàng.
-         *  (Rút ngắn so với 45/120/300 trước đây để phục hồi nhanh hơn, hợp với poll readiness.) */
-        private val BOOT_ALARM_DELAYS_MS = longArrayOf(15_000L, 40_000L, 90_000L)
+        /** Retry boot greeting theo backoff để bao phủ cả box khởi động rất chậm. */
+        private val BOOT_ALARM_DELAYS_MS = longArrayOf(
+            15_000L,
+            40_000L,
+            90_000L,
+            180_000L,
+            360_000L
+        )
 
         fun scheduleBootRetryAlarms(context: Context) {
             val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
@@ -166,19 +171,26 @@ class BootReceiver : BroadcastReceiver() {
         HiCarDiagnosticLog.d("HiCarBoot", "hasGreetingAudio: flutter.greeting_audio_path=$configuredPath")
 
         if (configuredPath.isNotEmpty()) {
-            val exists = File(configuredPath).exists()
-            HiCarDiagnosticLog.d("HiCarBoot", "hasGreetingAudio: regular path exists=$exists")
-            if (exists) return true
+            val usable = AudioFileValidator.isUsable(File(configuredPath))
+            HiCarDiagnosticLog.d("HiCarBoot", "hasGreetingAudio: regular path usable=$usable")
+            if (usable) return true
         }
 
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
-            HiCarDiagnosticLog.w("HiCarBoot", "hasGreetingAudio: API < N, no boot_greeting fallback → SKIP")
-            return false
+            // Android cũ không có Device Protected Storage. BootReceiver chạy sau khi
+            // user đã unlock nên filesDir thường là vùng lưu trữ phù hợp nhất.
+            val legacyBootFile = File(context.filesDir, "boot_greeting.mp3")
+            HiCarDiagnosticLog.d(
+                "HiCarBoot",
+                "hasGreetingAudio: API < N, legacy boot path=${legacyBootFile.absolutePath}, " +
+                    "exists=${legacyBootFile.exists()}, size=${if (legacyBootFile.exists()) legacyBootFile.length() else 0}"
+            )
+            return AudioFileValidator.isUsable(legacyBootFile)
         }
 
         val protectedContext = context.createDeviceProtectedStorageContext()
         val bootFile = File(protectedContext.filesDir, "boot_greeting.mp3")
         HiCarDiagnosticLog.d("HiCarBoot", "hasGreetingAudio: boot_greeting.mp3 path=${bootFile.absolutePath}, exists=${bootFile.exists()}, size=${if (bootFile.exists()) bootFile.length() else 0}")
-        return bootFile.exists()
+        return AudioFileValidator.isUsable(bootFile)
     }
 }

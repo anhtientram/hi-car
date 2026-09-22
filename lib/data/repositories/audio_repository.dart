@@ -48,13 +48,18 @@ class AudioRepository {
       );
     }).toList();
 
-    // Nếu người dùng chưa có nhạc chào, tự chọn một audio vừa đồng bộ.
+    // Nếu người dùng chưa có nhạc chào, tự chọn một audio greeting vừa đồng bộ.
     // Khi đã có lựa chọn, tuyệt đối giữ nguyên để sync không đổi cấu hình của người dùng.
-    if (greetingId.isEmpty && updated.isNotEmpty) {
-      final greeting = updated.firstWhere(
-        (audio) => audio.type == AudioType.greeting,
-        orElse: () => updated.first,
-      );
+    // Không lấy goodbye/custom làm greeting nếu server không trả về audio greeting.
+    if (greetingId.isEmpty) {
+      final greetingCandidates =
+          updated.where((audio) => audio.type == AudioType.greeting).toList();
+      if (greetingCandidates.isEmpty) {
+        await saveLocalList(updated);
+        return updated;
+      }
+
+      final greeting = greetingCandidates.first;
 
       await prefs.setString(AppConstants.keyGreetingAudioId, greeting.id);
       updated = updated

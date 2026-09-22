@@ -392,7 +392,7 @@ class _PermissionConfigScreenState extends State<PermissionConfigScreen>
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Trên iOS không cần các quyền chạy ngầm như Android. Hệ thống tự định tuyến âm thanh ra loa xe khi kết nối CarPlay/Bluetooth.',
+                  'Trên iOS không cần các quyền chạy ngầm như Android. Hệ thống tự định tuyến âm thanh ra loa xe khi kết nối CarPlay/Bluetooth. Tác vụ tự chạy nền của HiCar cần iOS 16 trở lên; iOS 13–15 có thể cần mở app để phát thủ công.',
                   style:
                       TextStyle(color: AppColors.textSecondary, fontSize: 14.sp),
                 ),

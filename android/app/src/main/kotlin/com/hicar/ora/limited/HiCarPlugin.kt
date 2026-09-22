@@ -54,6 +54,7 @@ class HiCarPlugin : FlutterPlugin, MethodCallHandler {
     /** (Re)tạo channels + handlers trên messenger được cung cấp. Idempotent. */
     fun attach(messenger: BinaryMessenger, appContext: Context) {
         context = appContext
+        HiCarDiagnosticLog.init(appContext)
         serviceChannel   = MethodChannel(messenger, SERVICE_CHANNEL)
         bluetoothChannel = MethodChannel(messenger, BLUETOOTH_CHANNEL)
         serviceChannel.setMethodCallHandler(this)
@@ -91,7 +92,7 @@ class HiCarPlugin : FlutterPlugin, MethodCallHandler {
             try {
                 serviceChannel.invokeMethod(method, arguments)
             } catch (e: Exception) {
-                e.printStackTrace()
+                HiCarDiagnosticLog.e("HiCarPlugin", "invokeServiceMethod($method) lỗi: ${e.message}")
             }
         }
     }
@@ -101,7 +102,7 @@ class HiCarPlugin : FlutterPlugin, MethodCallHandler {
             try {
                 bluetoothChannel.invokeMethod(method, arguments)
             } catch (e: Exception) {
-                e.printStackTrace()
+                HiCarDiagnosticLog.e("HiCarPlugin", "invokeBluetoothMethod($method) lỗi: ${e.message}")
             }
         }
     }
@@ -124,6 +125,34 @@ class HiCarPlugin : FlutterPlugin, MethodCallHandler {
                 if (audioPath.isNotEmpty()) autoSyncBootFile(audioPath, "boot_greeting.mp3")
                 val intent = buildServiceIntent(AudioForegroundService.ACTION_PLAY_GREETING)
                 intent.putExtra("audioPath", audioPath)
+                startServiceSafe(intent)
+                result.success(true)
+            }
+            "retryGreeting" -> {
+                val prefs = context.getSharedPreferences(
+                    "FlutterSharedPreferences",
+                    Context.MODE_PRIVATE
+                )
+                val mode = prefs.getString("flutter.connection_mode", "") ?: ""
+                val audioPath = call.argument<String>("audioPath") ?: ""
+                val action = if (mode == "android_box_mode") {
+                    // Đây là retry do người dùng bấm, không phải boot event mới;
+                    // phát file boot qua luồng manual để không bị session boot cũ chặn.
+                    AudioForegroundService.ACTION_PLAY_GREETING
+                } else {
+                    AudioForegroundService.ACTION_PLAY_GREETING
+                }
+                val intent = buildServiceIntent(action).apply {
+                    putExtra("audioPath", audioPath)
+                    putExtra(
+                        AudioForegroundService.EXTRA_PREFER_BOOT_AUDIO,
+                        mode == "android_box_mode"
+                    )
+                }
+                if (audioPath.isNotEmpty() && mode == "android_box_mode") {
+                    autoSyncBootFile(audioPath, "boot_greeting.mp3")
+                }
+                HiCarDiagnosticLog.d("HiCarPlugin", "retryGreeting requested mode=$mode")
                 startServiceSafe(intent)
                 result.success(true)
             }
@@ -202,17 +231,28 @@ class HiCarPlugin : FlutterPlugin, MethodCallHandler {
     // ── Boot file sync ─────────────────────────────────────────────────────────
 
     private fun autoSyncBootFile(sourcePath: String, destName: String) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return
         try {
             val src = java.io.File(sourcePath)
-            if (!src.exists()) return
-            val destDir = context.createDeviceProtectedStorageContext().filesDir
+            if (!AudioFileValidator.isUsable(src)) {
+                HiCarDiagnosticLog.e("HiCarPlugin", "autoSyncBootFile: source audio không hợp lệ: $sourcePath")
+                return
+            }
+            val destDir = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                context.createDeviceProtectedStorageContext().filesDir
+            } else {
+                context.filesDir
+            }
             val dest = java.io.File(destDir, destName)
-            if (dest.exists() && dest.length() == src.length()) return
-            src.copyTo(dest, overwrite = true)
-            android.util.Log.i("HiCarPlugin", "autoSyncBootFile: $destName updated (${dest.length()} bytes)")
+            if (AudioFileValidator.isUsable(dest) && dest.length() == src.length()) return
+            val part = java.io.File(destDir, "$destName.part")
+            src.copyTo(part, overwrite = true)
+            if (dest.exists()) dest.delete()
+            if (part.length() < 128L || !part.renameTo(dest)) {
+                throw java.io.IOException("atomic boot file rename failed")
+            }
+            HiCarDiagnosticLog.d("HiCarPlugin", "autoSyncBootFile: $destName updated (${dest.length()} bytes)")
         } catch (e: Exception) {
-            android.util.Log.e("HiCarPlugin", "autoSyncBootFile: error – ${e.message}")
+            HiCarDiagnosticLog.e("HiCarPlugin", "autoSyncBootFile: error – ${e.message}")
         }
     }
 
@@ -303,8 +343,11 @@ class HiCarPlugin : FlutterPlugin, MethodCallHandler {
     }
 
     private fun syncFilesToDeviceProtected() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return
-        val deviceContext = context.createDeviceProtectedStorageContext()
+        val deviceContext = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            context.createDeviceProtectedStorageContext()
+        } else {
+            context
+        }
         val prefs = deviceContext.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
         val greetingPath = prefs.getString("flutter.greeting_audio_path", "") ?: ""
         val goodbyePath  = prefs.getString("flutter.goodbye_audio_path",  "") ?: ""
@@ -317,12 +360,20 @@ class HiCarPlugin : FlutterPlugin, MethodCallHandler {
     private fun copyFileToProtected(sourcePath: String, destName: String, deviceContext: android.content.Context) {
         try {
             val src = java.io.File(sourcePath)
-            if (!src.exists()) { android.util.Log.e("HiCarSync", "source NOT found: $sourcePath"); return }
+            if (!AudioFileValidator.isUsable(src)) {
+                HiCarDiagnosticLog.e("HiCarSync", "source NOT found: $sourcePath")
+                return
+            }
             val dest = java.io.File(deviceContext.filesDir, destName)
-            src.inputStream().use { i -> dest.outputStream().use { o -> i.copyTo(o) } }
-            android.util.Log.i("HiCarSync", "copyFileToProtected OK → ${dest.absolutePath} (${dest.length()} bytes)")
+            val part = java.io.File(deviceContext.filesDir, "$destName.part")
+            src.inputStream().use { i -> part.outputStream().use { o -> i.copyTo(o) } }
+            if (dest.exists()) dest.delete()
+            if (part.length() < 128L || !part.renameTo(dest)) {
+                throw java.io.IOException("atomic boot file rename failed")
+            }
+            HiCarDiagnosticLog.d("HiCarSync", "copyFileToProtected OK → ${dest.absolutePath} (${dest.length()} bytes)")
         } catch (e: Exception) {
-            android.util.Log.e("HiCarSync", "copyFileToProtected ERROR $destName – ${e.message}")
+            HiCarDiagnosticLog.e("HiCarSync", "copyFileToProtected ERROR $destName – ${e.message}")
         }
     }
 
@@ -434,8 +485,16 @@ class HiCarPlugin : FlutterPlugin, MethodCallHandler {
         Intent(context, AudioForegroundService::class.java).apply { this.action = action }
 
     private fun startServiceSafe(intent: Intent) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
-        else context.startService(intent)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
+            else context.startService(intent)
+        } catch (e: Exception) {
+            HiCarDiagnosticLog.e(
+                "HiCarService",
+                "startServiceSafe action=${intent.action} lỗi: ${e.message}"
+            )
+            throw e
+        }
     }
 
     /** Demo adb-style lines for testing bug report UI (Settings → Báo cáo lỗi). */

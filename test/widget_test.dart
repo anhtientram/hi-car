@@ -7,24 +7,46 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-
-import 'package:hi_car/main.dart';
+import 'package:hi_car/core/logger.dart';
+import 'package:hi_car/widgets/incident_overlay.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  testWidgets('incident popup shows context and can be dismissed',
+      (WidgetTester tester) async {
+    AppLogger.instance.clear();
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: IncidentOverlay(
+          child: const Scaffold(body: Text('HiCar')),
+        ),
+      ),
+    );
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
+    AppLogger.instance.log(
+      'Native playback failed',
+      type: 'native_playback_error',
+      userMessage: 'Không phát được lời chào.',
+      incidentId: 'test-incident',
+      requiresAction: true,
+      details: {
+        'mode': 'phone_android_auto',
+        'device_name': 'Test Head Unit',
+        'os_version': 'Android 12',
+      },
+    );
     await tester.pump();
 
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    expect(find.text('Không phát được lời chào.'), findsOneWidget);
+    expect(find.textContaining('Android Auto'), findsOneWidget);
+    expect(find.textContaining('Test Head Unit'), findsOneWidget);
+    expect(find.text('Gửi báo lỗi'), findsOneWidget);
+    expect(find.text('Thử lại'), findsOneWidget);
+
+    await tester.tap(find.text('Đóng'));
+    await tester.pump();
+    expect(find.text('Không phát được lời chào.'), findsNothing);
+
+    AppLogger.instance.clear();
   });
 }

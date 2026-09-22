@@ -53,7 +53,7 @@ Resume từ nền (đã pause) → phát lại nếu bật play-on-open.
 Nổ máy → box reboot
   → BootReceiver (chỉ khi android_box_mode)
   → FGS specialUse + boot_greeting.mp3 (Direct Boot)
-  → poll audio focus / alarm 15s·40s·90s
+  → poll audio focus / alarm backoff 15s·40s·90s·180s·360s
   → phát ngầm
 ```
 

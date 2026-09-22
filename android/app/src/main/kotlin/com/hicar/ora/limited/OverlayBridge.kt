@@ -5,7 +5,6 @@ import android.content.Intent
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
 import android.widget.Toast
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodCall
@@ -47,11 +46,12 @@ object OverlayBridge {
         val hash = System.identityHashCode(engine)
         if (registeredEngineHash == hash && channel != null) return
         val ctx = appContext.applicationContext
+        HiCarDiagnosticLog.init(ctx)
         val ch = MethodChannel(engine.dartExecutor.binaryMessenger, CHANNEL)
         ch.setMethodCallHandler { call, result -> handle(call, result, ctx) }
         channel = ch
         registeredEngineHash = hash
-        Log.i("OverlayBridge", "registered on overlay engine #$hash")
+        HiCarDiagnosticLog.d("OverlayBridge", "registered on overlay engine #$hash")
     }
 
     // ── Overlay (Dart) → Native ──────────────────────────────────────────────
@@ -87,7 +87,11 @@ object OverlayBridge {
                 } catch (_: Exception) {
                 }
             }
-            Log.w("OverlayBridge", "playType($type): no valid audio path → not configured")
+            HiCarDiagnosticLog.e("OverlayBridge", "playType($type): no valid audio path → not configured")
+            HiCarPlugin.instance?.invokeServiceMethod(
+                "onNativeError",
+                "Overlay không tìm thấy file audio $type hợp lệ"
+            )
             result.success(false)
             return
         }
@@ -103,12 +107,12 @@ object OverlayBridge {
         val bootName = if (type == "greeting") "boot_greeting.mp3" else "boot_goodbye.mp3"
 
         val prefPath = readPref(ctx, prefKey)
-        if (!prefPath.isNullOrEmpty() && File(prefPath).exists()) return prefPath
+        if (!prefPath.isNullOrEmpty() && AudioFileValidator.isUsable(File(prefPath))) return prefPath
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             try {
                 val bootFile = File(ctx.createDeviceProtectedStorageContext().filesDir, bootName)
-                if (bootFile.exists() && bootFile.length() > 0) return bootFile.absolutePath
+                if (AudioFileValidator.isUsable(bootFile)) return bootFile.absolutePath
             } catch (_: Exception) {
             }
         }
@@ -142,7 +146,11 @@ object OverlayBridge {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ctx.startForegroundService(intent)
             else ctx.startService(intent)
         } catch (e: Exception) {
-            Log.e("OverlayBridge", "startAudioService error: ${e.message}")
+            HiCarDiagnosticLog.e("OverlayBridge", "startAudioService error: ${e.message}")
+            HiCarPlugin.instance?.invokeServiceMethod(
+                "onNativeError",
+                "Overlay không khởi động được AudioForegroundService: ${e.message}"
+            )
         }
     }
 
@@ -156,7 +164,7 @@ object OverlayBridge {
             )
             ctx.startActivity(launch)
         } catch (e: Exception) {
-            Log.e("OverlayBridge", "openApp error: ${e.message}")
+            HiCarDiagnosticLog.e("OverlayBridge", "openApp error: ${e.message}")
         }
     }
 

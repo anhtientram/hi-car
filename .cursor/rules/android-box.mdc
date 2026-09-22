@@ -13,7 +13,7 @@ Physical box plugged into the factory screen (mini PC). Car off/on → box reboo
 - Owner = native only: `BootReceiver` → FGS `ACTION_PLAY_GREETING_DELAYED` + `ACTION_BOOT_RETRY_GREETING`. Flutter `_initPlayOnOpen` **skips** this mode.
 - Copy `boot_greeting.mp3` to **device-protected** storage while the app is open (`HiCarPlugin`). Direct Boot cannot read credential prefs.
 - Identify a new boot via `BOOT_COUNT` then kernel `boot_id` — **not** wall-clock (many boxes have no RTC; clock rewind would skip forever).
-- Poll audio focus (warm ~2s, cold wait). Slow box → keep waiting / alarm retry 15s·40s·90s. Do not cancel the boot greeting.
+- Poll audio focus (warm ~2s, cold wait). Slow box → keep waiting / alarm retry 15s·40s·90s·180s·360s. Do not cancel the boot greeting.
 - Boot-started FGS uses type `specialUse` (API 34+). Other modes keep `mediaPlayback`.
 - One greeting per **boot session**. Do not mark complete if playback never actually started.
 

@@ -461,7 +461,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               ),
                               SizedBox(height: 6.h),
                               Text(
-                                log.message,
+                                log.userMessage ?? log.message,
                                 style: TextStyle(
                                     color: AppColors.textPrimary,
                                     fontSize: 12.sp),
@@ -672,8 +672,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case 'native_error':
       case 'network_error':
       case 'native_playback_error':
+      case 'incident_error':
+      case 'permission_error':
+      case 'route_error':
         return AppColors.error;
       case 'sync_error':
+      case 'download_error':
+      case 'storage_error':
         return AppColors.warning;
       case 'playback_error':
         return Colors.orange;

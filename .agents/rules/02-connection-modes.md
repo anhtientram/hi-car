@@ -40,7 +40,7 @@ Không dùng picker thiết bị Android. Khách set lời chào trong app, rồ
 
 Cục box gắn màn zin — **không** phải màn độ.
 
-- Boot / Direct Boot → FGS `specialUse` → poll focus + alarm 15s/40s/90s.
+- Boot / Direct Boot → FGS `specialUse` → poll focus + alarm backoff 15s/40s/90s/180s/360s.
 - Flutter mở app **không** phát chồng boot.
 - Box chậm / không RTC → đợi, session theo `BOOT_COUNT` (không theo đồng hồ tường).
 - Chi tiết: [`05-android-box.md`](05-android-box.md) · workflow [`../workflows/05-android-box-boot.md`](../workflows/05-android-box-boot.md).

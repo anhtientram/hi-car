@@ -59,6 +59,10 @@ import AppIntents
         } else {
           result(HiCarAudioPlayer.shared.play(path: path, type: "greeting"))
         }
+      case "retryGreeting":
+        Task {
+          result(await HiCarAudioPlayer.shared.playWhenRouteReady(type: "greeting"))
+        }
       case "playGoodbye":
         let path = (args?["audioPath"] as? String) ?? ""
         if path.isEmpty {
@@ -173,6 +177,49 @@ final class HiCarAudioPlayer: NSObject, AVAudioPlayerDelegate {
     }
   }
 
+  /// App Intent có thể chạy ngay trước khi CarPlay/Bluetooth hoàn tất route.
+  /// Chờ route thật sự sẵn sàng rồi mới phát, thay vì phát nhầm ra loa iPhone và
+  /// coi lần kích hoạt đó là đã thành công.
+  func playWhenRouteReady(type: String) async -> Bool {
+    let maxAttempts = 60 // tối đa khoảng 30 giây, đủ cho head unit/BT chậm
+    for attempt in 0..<maxAttempts {
+      configureSession()
+      do {
+        try AVAudioSession.sharedInstance().setActive(true, options: [])
+      } catch {
+        NSLog("HiCar: audio session chưa sẵn sàng (attempt \(attempt + 1)): \(error.localizedDescription)")
+      }
+
+      guard let path = resolvePath(for: type) else {
+        NSLog("HiCar: chưa có file \(type), tiếp tục chờ đồng bộ")
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        continue
+      }
+
+      if hasCarRoute() {
+        return play(path: path, type: type)
+      }
+
+      if attempt == maxAttempts - 1 {
+        NSLog("HiCar: hết thời gian chờ route xe cho \(type)")
+        return false
+      }
+      try? await Task.sleep(nanoseconds: 500_000_000)
+    }
+    return false
+  }
+
+  private func hasCarRoute() -> Bool {
+    let carPorts: Set<AVAudioSession.Port> = [
+      .carAudio,
+      .bluetoothA2DP,
+      .bluetoothHFP,
+    ]
+    return !AVAudioSession.sharedInstance().currentRoute.outputs
+      .filter { carPorts.contains($0.portType) }
+      .isEmpty
+  }
+
   func stop() {
     player?.stop()
     player = nil
@@ -228,9 +275,10 @@ struct PlayGreetingIntent: AppIntent {
   static var openAppWhenRun: Bool = false
 
   func perform() async throws -> some IntentResult & ProvidesDialog {
-    HiCarAudioPlayer.shared.configureSession()
-    let ok = HiCarAudioPlayer.shared.play(type: "greeting")
-    let message = ok ? "Đang phát lời chào." : "Chưa cấu hình lời chào trong ứng dụng HiCar."
+    let ok = await HiCarAudioPlayer.shared.playWhenRouteReady(type: "greeting")
+    let message = ok
+      ? "Đang phát lời chào."
+      : "CarPlay/Bluetooth chưa sẵn sàng hoặc chưa có nhạc chào."
     return .result(dialog: "\(message)")
   }
 }
@@ -243,9 +291,10 @@ struct PlayGoodbyeIntent: AppIntent {
   static var openAppWhenRun: Bool = false
 
   func perform() async throws -> some IntentResult & ProvidesDialog {
-    HiCarAudioPlayer.shared.configureSession()
-    let ok = HiCarAudioPlayer.shared.play(type: "goodbye")
-    let message = ok ? "Đang phát lời tạm biệt." : "Chưa cấu hình lời tạm biệt trong ứng dụng HiCar."
+    let ok = await HiCarAudioPlayer.shared.playWhenRouteReady(type: "goodbye")
+    let message = ok
+      ? "Đang phát lời tạm biệt."
+      : "CarPlay/Bluetooth chưa sẵn sàng hoặc chưa có nhạc tạm biệt."
     return .result(dialog: "\(message)")
   }
 }

@@ -7,7 +7,6 @@ import android.bluetooth.BluetoothProfile
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.util.Log
 import android.os.Build
 
 class BluetoothReceiver : BroadcastReceiver() {
@@ -83,7 +82,11 @@ class BluetoothReceiver : BroadcastReceiver() {
                         if (state == BluetoothProfile.STATE_CONNECTED && isDeviceConnected(device)) {
                             return true
                         }
+                        // Đã chỉ định target thì tuyệt đối không fallback sang A2DP của
+                        // thiết bị khác đang nối (ví dụ tai nghe/xe khác).
+                        return false
                     } catch (_: Exception) {
+                        return false
                     }
                 }
 
@@ -226,15 +229,20 @@ class BluetoothReceiver : BroadcastReceiver() {
     }
 
     override fun onReceive(context: Context, intent: Intent) {
+        HiCarDiagnosticLog.init(context)
         // ⚠️ Android 12+ (API 31): đọc BluetoothDevice.address/name YÊU CẦU quyền BLUETOOTH_CONNECT.
         //    Nếu chưa được cấp, truy cập sẽ ném SecurityException → nếu không bắt, receiver "chết"
         //    âm thầm và auto-play (đặc biệt Android Auto KHÔNG DÂY) không bao giờ chạy.
         try {
             handleReceive(context, intent)
         } catch (e: SecurityException) {
-            Log.w("HiCar", "BluetoothReceiver thiếu quyền BLUETOOTH_CONNECT: ${e.message}")
+            val message = "BluetoothReceiver thiếu quyền BLUETOOTH_CONNECT: ${e.message}"
+            HiCarDiagnosticLog.e("HiCarBT", message)
+            HiCarPlugin.instance?.invokeServiceMethod("onNativeError", message)
         } catch (e: Exception) {
-            Log.w("HiCar", "BluetoothReceiver lỗi: ${e.message}")
+            val message = "BluetoothReceiver lỗi: ${e.message}"
+            HiCarDiagnosticLog.e("HiCarBT", message)
+            HiCarPlugin.instance?.invokeServiceMethod("onNativeError", message)
         }
     }
 
@@ -295,13 +303,13 @@ class BluetoothReceiver : BroadcastReceiver() {
 
         when (intent.action) {
             BluetoothDevice.ACTION_ACL_CONNECTED -> {
-                Log.d("HiCar", "ACL Connected: $deviceAddress")
-                Log.d("HiCar", "Conditions: autoPlayEnabled=$autoPlayEnabled, mode=$connectionMode, target=$targetAddress")
+                HiCarDiagnosticLog.d("HiCarBT", "ACL Connected: $deviceAddress")
+                HiCarDiagnosticLog.d("HiCarBT", "Conditions: autoPlayEnabled=$autoPlayEnabled, mode=$connectionMode, target=$targetAddress")
                 
                 if (autoPlayEnabled) {
                     if (connectionMode == "phone_android_auto") {
                         // AA không dây: BT nối trước projection → KHÔNG phát ngay, chỉ bật watch.
-                        Log.d("HiCar", "AA Mode: BT connected → watch CarConnection projection")
+                        HiCarDiagnosticLog.d("HiCarAA", "AA Mode: BT connected → watch CarConnection projection")
                         val serviceIntent = Intent(context, AudioForegroundService::class.java).apply {
                             action = AudioForegroundService.ACTION_AA_WATCH_PROJECTION
                         }
@@ -315,7 +323,7 @@ class BluetoothReceiver : BroadcastReceiver() {
                         // ACL connect xảy ra trước khi sink A2DP của màn hình xe sẵn sàng; nếu phát
                         // ngay, âm thanh ra loa điện thoại. Bật watch A2DP: service sẽ đợi tới khi
                         // route A2DP = CONNECTED rồi mới phát → tiếng luôn ra loa xe.
-                        Log.d("HiCar", "Bluetooth Mode: Target Match! → watch A2DP trước khi phát")
+                        HiCarDiagnosticLog.d("HiCarBT", "Bluetooth Mode: Target Match! → watch A2DP trước khi phát")
                         val serviceIntent = Intent(context, AudioForegroundService::class.java).apply {
                             action = AudioForegroundService.ACTION_BT_WATCH_A2DP
                             putExtra("deviceAddress", deviceAddress)

@@ -102,19 +102,10 @@ object HiCarDiagnosticLog {
     private fun getFilteredErrorLines(context: Context?): List<String> {
         if (buffer.isEmpty()) return emptyList()
         val lines = buffer.toList()
-        if (context == null || !BootSessionManager.shouldSuppressBootWarnings(context)) {
-            return lines
-        }
-        return lines.filterNot { isStaleBoxBootWarning(it) }
-    }
-
-    /** Cảnh báo poll/best-effort boot — oan sau khi box đã phát được. */
-    private fun isStaleBoxBootWarning(line: String): Boolean {
-        if (!line.contains(" W HiCarService")) return false
-        return line.contains("Boot watch: timeout") ||
-            line.contains("phát best-effort (alarm retry") ||
-            line.contains("Box boot greeting phát best-effort") ||
-            line.contains("Box boot best-effort (session=")
+        // Không lọc bỏ warning boot đã cũ ở đây. Trong thực tế lỗi xảy ra trên box
+        // chậm thường chỉ còn lại trong file diagnostic sau khi UI đã mở; giữ nguyên
+        // toàn bộ E/W giúp popup và báo cáo không bị "trống" mất nguyên nhân.
+        return lines
     }
 
     fun clear() {
@@ -124,7 +115,8 @@ object HiCarDiagnosticLog {
             try {
                 File(ctx.filesDir, FILE_NAME).delete()
                 diskLineCount = 0
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Log.e("HiCar", "Diagnostic clear failed: ${e.message}")
             }
         }
     }
@@ -171,7 +163,8 @@ object HiCarDiagnosticLog {
             buffer.clear()
             lines.takeLast(MAX_LINES).forEach { buffer.add(it) }
             diskLineCount = lines.size
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.e("HiCar", "Diagnostic load failed: ${e.message}")
         }
     }
 
@@ -185,7 +178,8 @@ object HiCarDiagnosticLog {
                 if (diskLineCount > MAX_DISK_LINES) {
                     trimDiskFile(file)
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Log.e("HiCar", "Diagnostic persist failed: ${e.message}")
             }
         }
     }
@@ -193,10 +187,11 @@ object HiCarDiagnosticLog {
     /** Rút gọn file trên disk về MAX_LINES dòng gần nhất (gọi trên ioExecutor). */
     private fun trimDiskFile(file: File) {
         try {
-            val kept = file.readLines().takeLast(MAX_LINES)
+            val kept = file.readLines().takeLast(MAX_DISK_LINES)
             file.writeText(kept.joinToString("\n", postfix = "\n"))
             diskLineCount = kept.size
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.e("HiCar", "Diagnostic trim failed: ${e.message}")
         }
     }
 }
