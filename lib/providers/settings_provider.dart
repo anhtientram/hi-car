@@ -29,7 +29,10 @@ class SettingsProvider extends ChangeNotifier {
   String? get pendingConnectionMode => _pendingConnectionMode;
   bool get isBetaMode => _isBetaMode;
 
-  Future<void> init() async {
+  Future<void>? _initialization;
+  Future<void> init() => _initialization ??= _initialize();
+
+  Future<void> _initialize() async {
     final prefs = await SharedPreferences.getInstance();
     _autoPlayEnabled = prefs.getBool(AppConstants.keyAutoPlayEnabled) ?? true;
     _delaySeconds = prefs.getInt(AppConstants.keyDelaySeconds) ??

@@ -195,6 +195,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     //    đang chuyển cảnh...) khiến nút nổi bị tắt sớm/giật và đóng/mở liên tục.
     if (state == AppLifecycleState.resumed) {
       _overlayProvider.hideOverlay();
+      _audioProvider.reconcileNativePlayback();
       ServiceChannel.instance.importNativeDiagnostics().catchError((_) {});
 
       // 🟢 Chế độ Màn Độ: mỗi lần MỞ LẠI app (resume từ nền) thì phát lại lời chào.
@@ -221,19 +222,22 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
 
   /// Phát lại lời chào khi app được mở lại (chỉ áp dụng chế độ Màn Độ + bật "phát khi mở app").
   Future<void> _maybePlayGreetingOnResume() async {
+    await _settingsProvider.init();
+    if (!mounted) return;
     if (_settingsProvider.connectionMode != 'android_screen_mode') return;
     if (!_settingsProvider.playOnOpen) return;
     // 🟢 Chưa đăng nhập thì không phát (vd: vừa đăng xuất, đang ở màn Login).
     if (!await _isLoggedIn()) return;
-    if (_audioProvider.isNativeGreetingPlaying ||
-        _audioProvider.isNativeGoodbyePlaying) {
+    if (_audioProvider.isNativePlaybackBusy) {
       return;
     }
 
     // Chờ một nhịp để hệ thống ổn định (audio focus, UI) sau khi resume.
     await Future.delayed(const Duration(milliseconds: 600));
-    if (_audioProvider.isNativeGreetingPlaying ||
-        _audioProvider.isNativeGoodbyePlaying) {
+    if (!mounted ||
+        WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed ||
+        _audioProvider.isNativePlaybackBusy ||
+        _settingsProvider.connectionMode != 'android_screen_mode') {
       return;
     }
 
@@ -342,8 +346,8 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
 
   Future<void> _initPlayOnOpen() async {
     if (_hasTriggeredOpenGreeting) return;
-
-    await Future.delayed(const Duration(milliseconds: 1000));
+    await _settingsProvider.init();
+    if (!mounted) return;
 
     if (!_settingsProvider.playOnOpen) return;
 
@@ -355,17 +359,19 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
 
     // 🟢 Chế độ Android Box do BootReceiver/Service tự phát ngầm khi Box khởi động.
     //    Không phát thêm từ Flutter để tránh bị ngắt/phát lại từ đầu hoặc phát lặp.
-    if (_settingsProvider.connectionMode == 'android_box_mode') {
-      debugPrint('Main: Box mode → boot service owns playback, skip on open');
+    if (_settingsProvider.connectionMode != 'android_screen_mode') {
+      debugPrint(
+          'Main: native/Shortcuts owns this mode, skip Flutter play-on-open');
       return;
     }
 
     // Sync có thể chậm hơn 10 giây trên box/OS cũ. Dùng backoff và chờ đến khi
     // có audio greeting thực sự, không coi timeout tạm thời là "không có nhạc".
     var retryCount = 0;
-    while (!_hasTriggeredOpenGreeting) {
+    while (mounted && !_hasTriggeredOpenGreeting) {
       if (!_settingsProvider.playOnOpen ||
-          _settingsProvider.connectionMode == 'android_box_mode' ||
+          !_settingsProvider.autoPlayEnabled ||
+          _settingsProvider.connectionMode != 'android_screen_mode' ||
           !await _isLoggedIn()) {
         return;
       }

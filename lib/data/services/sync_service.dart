@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
@@ -14,10 +15,25 @@ class SyncService {
   SyncService._();
   static final SyncService instance = SyncService._();
 
-  final _dio = Dio();
+  Dio _dio = Dio(BaseOptions(connectTimeout: const Duration(seconds: 20)));
+  Future<List<dynamic>> Function()? _fetchAudio;
+  Future<Directory> Function()? _audioDirectory;
+  final List<String> lastSyncFailures = [];
+
+  @visibleForTesting
+  SyncService.testing({
+    required Future<List<dynamic>> Function() fetchAudio,
+    required Future<Directory> Function() audioDirectory,
+    Dio? dio,
+  }) {
+    _fetchAudio = fetchAudio;
+    _audioDirectory = audioDirectory;
+    if (dio != null) _dio = dio;
+  }
 
   /// Gets the dedicated audio storage directory.
   Future<Directory> getAudioDir() async {
+    if (_audioDirectory != null) return _audioDirectory!();
     final docs = await getApplicationDocumentsDirectory();
     final audioDir = Directory('${docs.path}/hicar_audio');
     if (!await audioDir.exists()) {
@@ -37,7 +53,9 @@ class SyncService {
 
     try {
       // 1. Fetch live list from API
-      final rawList = await ApiService.instance.getAudioList();
+      lastSyncFailures.clear();
+      final rawList =
+          await (_fetchAudio?.call() ?? ApiService.instance.getAudioList());
       final audioDir = await getAudioDir();
       final prefs = await SharedPreferences.getInstance();
 
@@ -80,7 +98,9 @@ class SyncService {
         bool needsDownload = true;
 
         // Giữ file cũ: nếu hash không đổi, dùng bất kỳ bản local nào còn trên disk.
-        if (localMatch != null && localMatch.hash == audioModel.hash) {
+        if (localMatch != null &&
+            audioModel.hash?.isNotEmpty == true &&
+            localMatch.hash == audioModel.hash) {
           final candidates = <String>{
             if (localPath != null && localPath.isNotEmpty) localPath,
             _localPathFor(audioModel.id, audioModel.hash, audioDir.path),
@@ -103,6 +123,22 @@ class SyncService {
             audioDir: audioDir,
             contentHash: audioModel.hash,
           );
+          if (localPath == null) {
+            lastSyncFailures.add(audioModel.id);
+            // Keep BOTH the old path and old hash. Next sync must retry the new revision.
+            final previous = localMatch == null
+                ? null
+                : await _resolveExistingLocalPath(localMatch, audioDir);
+            if (localMatch != null && previous != null) {
+              syncedList.add(
+                  localMatch.copyWith(localPath: previous, isDownloaded: true));
+              AppLogger.instance.log(
+                  'Giữ audio hợp lệ cũ sau khi tải bản mới thất bại',
+                  type: 'sync_error',
+                  details: {'audioId': audioModel.id, 'path': previous});
+              continue;
+            }
+          }
         }
 
         syncedList.add(audioModel.copyWith(
@@ -131,7 +167,20 @@ class SyncService {
       await prefs.setString(
           'cached_audio_list', AudioModel.toJsonList(syncedList));
 
-      onProgress?.call('Đồng bộ thành công!', 1.0);
+      if (lastSyncFailures.isNotEmpty) {
+        AppLogger.instance.log(
+            'Đồng bộ chưa đủ: ${lastSyncFailures.length} file tải lỗi',
+            type: 'sync_error',
+            requiresAction: true,
+            userMessage:
+                'Một số file chưa tải được. Nhạc cũ được giữ lại; hãy đồng bộ lại khi có mạng.',
+            details: {'failed_audio_ids': List.of(lastSyncFailures)});
+      }
+      onProgress?.call(
+          lastSyncFailures.isEmpty
+              ? 'Đồng bộ thành công!'
+              : 'Còn file chưa tải được, đã giữ nhạc cũ.',
+          1.0);
       return syncedList;
     } catch (e) {
       final formattedError = ApiClient.formatError(e);
@@ -155,7 +204,7 @@ class SyncService {
     String? contentHash,
   }) async {
     final destPath = _localPathFor(audioId, contentHash, audioDir.path);
-    final partPath = '$destPath.part';
+    final partPath = '$destPath.${DateTime.now().microsecondsSinceEpoch}.part';
     // ignore: avoid_print
     print('📥 ĐANG TẢI FILE: $url -> $destPath');
 
@@ -193,9 +242,7 @@ class SyncService {
       }
 
       final destination = File(destPath);
-      if (await destination.exists()) {
-        await destination.delete();
-      }
+      // Same-directory rename replaces atomically on Android/iOS; never delete good audio first.
       await partFile.rename(destPath);
       AppLogger.instance.log(
         'Tải audio thành công: $audioId (${destination.lengthSync()} bytes)',
@@ -241,6 +288,8 @@ class SyncService {
   }
 
   String _localPathFor(String audioId, String? hash, String dirPath) {
+    audioId = Uri.encodeComponent(audioId);
+    hash = hash == null ? null : Uri.encodeComponent(hash);
     if (hash != null && hash.isNotEmpty) {
       return '$dirPath/${audioId}_$hash.mp3';
     }

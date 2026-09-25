@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../core/constants.dart';
 import '../core/logger.dart';
 import '../core/utils/device_utils.dart';
+import 'native_diagnostic.dart';
 
 /// Flutter → Kotlin bridge for AudioForegroundService control
 class ServiceChannel {
@@ -13,6 +14,8 @@ class ServiceChannel {
   static const _channel = MethodChannel(AppConstants.serviceChannel);
   VoidCallback? onPlaybackComplete;
   void Function(String type)? onPlaybackStarted;
+  VoidCallback? onPlaybackFailed;
+  void Function(String type)? onPlaybackPending;
 
   void init() {
     _channel.setMethodCallHandler((call) async {
@@ -21,6 +24,12 @@ class ServiceChannel {
         onPlaybackComplete?.call();
       } else if (call.method == 'onPlaybackStarted') {
         onPlaybackStarted?.call(call.arguments?.toString() ?? 'greeting');
+      } else if (call.method == 'onPlaybackPending') {
+        onPlaybackPending?.call(call.arguments?.toString() ?? 'greeting');
+      } else if (call.method == 'onPlaybackFailed') {
+        onPlaybackFailed?.call();
+      } else if (call.method == 'onPlaybackResolved') {
+        AppLogger.instance.resolvePlaybackJob(call.arguments.toString());
       } else if (call.method == 'onNativeError') {
         final message =
             call.arguments?.toString() ?? 'Lỗi không xác định từ Native';
@@ -29,8 +38,8 @@ class ServiceChannel {
         AppLogger.instance.log(
           'LỖI NATIVE: $message',
           type: 'native_error',
-          userMessage:
-              'Thiết bị hoặc kết nối xe vừa báo lỗi. Hãy thử lại hoặc gửi báo cáo.',
+          userMessage: NativeDiagnostic.message(message),
+          incidentId: NativeDiagnostic.idFor(message),
           requiresAction: true,
           details: {
             'source': 'native_method_channel',
@@ -39,10 +48,22 @@ class ServiceChannel {
             'device_name': device['device_name'],
             'device_model': device['device_model'],
             'os_version': device['os_version'],
+            'metadata_errors': device['metadata_errors'],
           },
         );
       }
     });
+  }
+
+  Future<Map<String, dynamic>?> getPlaybackStatus() async {
+    try {
+      return await _channel
+          .invokeMapMethod<String, dynamic>('getPlaybackStatus');
+    } catch (e) {
+      AppLogger.instance.log('Không đọc được trạng thái native playback: $e',
+          type: 'native_error', details: {'operation': 'getPlaybackStatus'});
+      return null;
+    }
   }
 
   Future<void> startService() async {
@@ -79,9 +100,14 @@ class ServiceChannel {
     }
   }
 
-  Future<void> playGreeting({required String audioPath}) async {
+  Future<void> playGreeting(
+      {required String audioPath, bool automatic = false}) async {
     try {
-      await _channel.invokeMethod('playGreeting', {'audioPath': audioPath});
+      final accepted = await _channel.invokeMethod<bool>(
+          'playGreeting', {'audioPath': audioPath, 'automatic': automatic});
+      if (accepted == false)
+        throw PlatformException(
+            code: 'PLAYBACK_REJECTED', message: 'Native từ chối phát lời chào');
     } on PlatformException catch (e) {
       debugPrint('ServiceChannel: playGreeting error: $e');
       AppLogger.instance.log(
@@ -124,7 +150,12 @@ class ServiceChannel {
 
   Future<void> playGoodbye({required String audioPath}) async {
     try {
-      await _channel.invokeMethod('playGoodbye', {'audioPath': audioPath});
+      final accepted = await _channel
+          .invokeMethod<bool>('playGoodbye', {'audioPath': audioPath});
+      if (accepted == false)
+        throw PlatformException(
+            code: 'PLAYBACK_REJECTED',
+            message: 'Native từ chối phát lời tạm biệt');
     } on PlatformException catch (e) {
       debugPrint('ServiceChannel: playGoodbye error: $e');
       AppLogger.instance.log(
@@ -132,12 +163,14 @@ class ServiceChannel {
         type: 'native_error',
         details: {'code': e.code, 'audioPath': audioPath},
       );
+      rethrow;
     } on MissingPluginException catch (e) {
       debugPrint('ServiceChannel: playGoodbye missing plugin: $e');
       AppLogger.instance.log(
         'Plugin Service chưa đăng ký (playGoodbye): $e',
         type: 'native_error',
       );
+      rethrow;
     }
   }
 
@@ -299,10 +332,14 @@ class ServiceChannel {
   /// được. Hàm này đọc các dòng E/W native và đẩy MỖI lỗi MỚI thành 1 thẻ AppLogger (đúng nút
   /// cũ), kèm adb log đầy đủ khi gửi. Dedup theo nội dung từng dòng để mở lại không bị lặp.
   static const String _kImportedDiagKeys = 'imported_native_diag_keys';
+  Future<void>? _importing;
 
-  Future<void> importNativeDiagnostics() async {
+  Future<void> importNativeDiagnostics() => _importing ??=
+      _importNativeDiagnostics().whenComplete(() => _importing = null);
+
+  Future<void> _importNativeDiagnostics() async {
     try {
-      final raw = await getDiagnosticLogErrors();
+      final raw = await getDiagnosticLogFull();
       if (raw.trim().isEmpty) return;
 
       final prefs = await SharedPreferences.getInstance();
@@ -314,8 +351,15 @@ class ServiceChannel {
 
       var added = 0;
       for (final line in raw.split('\n')) {
+        // Readiness warnings remain in the full timeline, but must not evict real bugs
+        // from the bounded in-app bug list during a long/overnight wait.
+        if (line.contains(' W ') && RegExp(
+            r'state=waiting_|focus_pending|SESSION_WAIT|route_or_file_pending|chưa sẵn sàng|vẫn đang chờ|CarConnection unavailable')
+            .hasMatch(line)) continue;
         final isError = line.contains(' E HiCar') ||
             line.contains(' W HiCar') ||
+            line.contains(' E OverlayBridge') ||
+            line.contains(' W OverlayBridge') ||
             line.contains('BOOT_PLAYBACK_MISSED');
         if (!isError) continue;
 
@@ -324,20 +368,23 @@ class ServiceChannel {
 
         importedSet.add(key);
         importedList.add(key);
-        final isHardError =
-            line.contains(' E HiCar') || line.contains('BOOT_PLAYBACK_MISSED');
+        final isHardError = NativeDiagnostic.needsAction(line, mode, raw);
         AppLogger.instance.log(
           _readableNativeLine(line),
           type: _mapNativeLineType(line),
-          userMessage: _userMessageForNativeLine(line),
-          incidentId: 'native-${key.hashCode}',
+          userMessage: NativeDiagnostic.message(line),
+          incidentId: NativeDiagnostic.idFor(key),
           requiresAction: isHardError,
           details: {
             'source': 'native_diagnostic',
-            'mode': mode,
+            'mode': NativeDiagnostic.modeIn(line) ?? mode,
+            'current_mode': mode,
+            'mode_source':
+                NativeDiagnostic.modeIn(line) == null ? 'import_time' : 'event',
             'device_name': device['device_name'],
             'device_model': device['device_model'],
             'os_version': device['os_version'],
+            'metadata_errors': device['metadata_errors'],
             'native_line': line,
           },
         );
@@ -346,8 +393,8 @@ class ServiceChannel {
 
       if (added > 0) {
         // Giới hạn key đã import (file native vốn bị cắt ~200 dòng) để prefs không phình.
-        final bounded = importedList.length > 200
-            ? importedList.sublist(importedList.length - 200)
+        final bounded = importedList.length > 2000
+            ? importedList.sublist(importedList.length - 2000)
             : importedList;
         await prefs.setStringList(_kImportedDiagKeys, bounded);
         debugPrint(
@@ -364,30 +411,6 @@ class ServiceChannel {
     if (line.contains('HiCarAudio')) return 'native_playback_error';
     if (line.contains('HiCarSync')) return 'sync_error';
     return 'native_error';
-  }
-
-  String _userMessageForNativeLine(String line) {
-    final lower = line.toLowerCase();
-    if (lower.contains('permission') || lower.contains('securityexception')) {
-      return 'Thiết bị đang thiếu quyền cần thiết để kết nối hoặc phát nhạc. Hãy mở phần Quyền ứng dụng và kiểm tra lại.';
-    }
-    if (lower.contains('a2dp')) {
-      return 'Bluetooth đã kết nối nhưng đường tiếng A2DP của xe chưa sẵn sàng.';
-    }
-    if (lower.contains('projection') || lower.contains('gearhead')) {
-      return 'Android Auto chưa sẵn sàng để phát qua hệ thống xe.';
-    }
-    if (lower.contains('file does not exist') ||
-        lower.contains('no valid audio')) {
-      return 'Không tìm thấy file nhạc chào trên thiết bị. Hãy mở app và đồng bộ lại audio.';
-    }
-    if (lower.contains('boot') || lower.contains('direct boot')) {
-      return 'Android Box chưa phát được lời chào sau khi khởi động.';
-    }
-    if (lower.contains('mediaplayer') || lower.contains('audio')) {
-      return 'Thiết bị gặp lỗi khi phát âm thanh. Bạn có thể gửi log để kiểm tra model và hệ điều hành.';
-    }
-    return 'Ứng dụng không hoàn tất được thao tác phát nhạc. Bạn có thể gửi báo lỗi để kiểm tra thiết bị này.';
   }
 
   /// Rút gọn dòng adb thành thông điệp dễ đọc: "[Lỗi · HiCarBoot] nội dung".

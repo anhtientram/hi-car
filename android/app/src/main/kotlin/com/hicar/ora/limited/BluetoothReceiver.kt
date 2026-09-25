@@ -56,42 +56,49 @@ class BluetoothReceiver : BroadcastReceiver() {
             }
         }
 
-        /**
-         * Kiểm tra profile A2DP (audio media) đã CONNECTED chưa.
-         *
-         * ⚠️ ACL_CONNECTED (lớp vật lý Bluetooth) xảy ra TRƯỚC khi màn hình xe khởi tạo xong
-         *    sink A2DP. Phát ngay lúc ACL → âm thanh ra LOA ĐIỆN THOẠI vì route A2DP chưa sẵn
-         *    sàng. Phải đợi tới khi A2DP = STATE_CONNECTED thì audio mới đi qua loa xe.
-         *
-         * Dùng adapter.getProfileConnectionState (đồng bộ) thay vì getProfileProxy (bất đồng bộ)
-         * để poll được trong vòng lặp watch. Trên xe thường chỉ có 1 sink A2DP nên trạng thái
-         * tổng hợp này đủ tin cậy; đã gate theo đúng địa chỉ xe mục tiêu ở bước ACL.
-         */
+        private var a2dpProxy: BluetoothProfile? = null
+        private var proxyRequestedAt = 0L
+        private var lastProfileErrorAt = 0L
+
+        fun releaseProfile(context: Context) {
+            val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+            a2dpProxy?.let { try { adapter?.closeProfileProxy(BluetoothProfile.A2DP, it) } catch (_: Exception) {} }
+            a2dpProxy = null
+            proxyRequestedAt = 0L
+        }
+
+        /** Public profile API: aggregate A2DP + ACL can accidentally match a different headset. */
         fun isA2dpConnected(context: Context, address: String): Boolean {
+            if (address.isEmpty()) return false
             return try {
-                val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
-                val adapter = bluetoothManager?.adapter ?: return false
-
-                // Ưu tiên kiểm tra đúng thiết bị mục tiêu nếu lấy được proxy/đối tượng device.
-                if (address.isNotEmpty()) {
-                    try {
-                        val device = adapter.getRemoteDevice(address)
-                        val state = adapter.getProfileConnectionState(BluetoothProfile.A2DP)
-                        // getProfileConnectionState là trạng thái tổng hợp của profile; kết hợp với
-                        // isConnected của đúng device để chắc chắn đúng xe đã nối.
-                        if (state == BluetoothProfile.STATE_CONNECTED && isDeviceConnected(device)) {
-                            return true
-                        }
-                        // Đã chỉ định target thì tuyệt đối không fallback sang A2DP của
-                        // thiết bị khác đang nối (ví dụ tai nghe/xe khác).
-                        return false
-                    } catch (_: Exception) {
-                        return false
+                val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+                    ?: return false
+                val proxy = a2dpProxy
+                if (proxy != null) {
+                    proxy.getConnectionState(adapter.getRemoteDevice(address)) == BluetoothProfile.STATE_CONNECTED
+                } else {
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    if (proxyRequestedAt == 0L || now - proxyRequestedAt > 10_000L) {
+                        proxyRequestedAt = now
+                        adapter.getProfileProxy(context.applicationContext, object : BluetoothProfile.ServiceListener {
+                            override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
+                                a2dpProxy = proxy
+                                proxyRequestedAt = 0L
+                            }
+                            override fun onServiceDisconnected(profile: Int) {
+                                a2dpProxy = null
+                                proxyRequestedAt = 0L
+                            }
+                        }, BluetoothProfile.A2DP)
                     }
+                    false // Unknown is waiting, never route-ready.
                 }
-
-                adapter.getProfileConnectionState(BluetoothProfile.A2DP) == BluetoothProfile.STATE_CONNECTED
             } catch (e: Exception) {
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (now - lastProfileErrorAt > 30_000L) {
+                    lastProfileErrorAt = now
+                    HiCarDiagnosticLog.e("HiCarBT", "A2DP state unavailable mode=phone_bluetooth api=${Build.VERSION.SDK_INT} ${e.stackTraceToString()}")
+                }
                 false
             }
         }
@@ -247,6 +254,10 @@ class BluetoothReceiver : BroadcastReceiver() {
     }
 
     private fun handleReceive(context: Context, intent: Intent) {
+        if (intent.action == BluetoothAdapter.ACTION_DISCOVERY_FINISHED) {
+            HiCarPlugin.instance?.invokeBluetoothMethod("onDiscoveryFinished", null)
+            return
+        }
         val device: BluetoothDevice? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
         } else {
@@ -257,7 +268,9 @@ class BluetoothReceiver : BroadcastReceiver() {
         val deviceAddress = device?.address ?: return
         
         // Load target and mode directly from SharedPreferences to ensure they are available even if the Service isn't running
-        val regularPrefs = context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+        val unlocked = Build.VERSION.SDK_INT < Build.VERSION_CODES.N ||
+            (context.getSystemService(Context.USER_SERVICE) as? android.os.UserManager)?.isUserUnlocked == true
+        val regularPrefs = if (unlocked) context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE) else null
         val storageContext = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             context.createDeviceProtectedStorageContext()
         } else {
@@ -266,7 +279,7 @@ class BluetoothReceiver : BroadcastReceiver() {
         val protectedPrefs = storageContext.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
         
         // Priority: Regular prefs (latest from UI) -> Protected prefs (boot sequence)
-        val prefs = if (regularPrefs.all.isNotEmpty()) regularPrefs else protectedPrefs
+        val prefs = if (regularPrefs != null && regularPrefs.all.isNotEmpty()) regularPrefs else protectedPrefs
         
         val connectionMode = prefs.getString("flutter.connection_mode", "phone_bluetooth") ?: "phone_bluetooth"
         val targetAddress = prefs.getString("flutter.target_device_address", "") ?: ""
@@ -306,7 +319,7 @@ class BluetoothReceiver : BroadcastReceiver() {
                 HiCarDiagnosticLog.d("HiCarBT", "ACL Connected: $deviceAddress")
                 HiCarDiagnosticLog.d("HiCarBT", "Conditions: autoPlayEnabled=$autoPlayEnabled, mode=$connectionMode, target=$targetAddress")
                 
-                if (autoPlayEnabled) {
+                if (autoPlayEnabled && !prefs.getString("flutter.auth_token", "").isNullOrEmpty()) {
                     if (connectionMode == "phone_android_auto") {
                         // AA không dây: BT nối trước projection → KHÔNG phát ngay, chỉ bật watch.
                         HiCarDiagnosticLog.d("HiCarAA", "AA Mode: BT connected → watch CarConnection projection")

@@ -20,6 +20,9 @@ object BootSessionManager {
     private const val KEY_COMPLETED = "last_completed_boot_session_id"
     private const val KEY_MISS_REPORTED = "boot_miss_reported_session_id"
     private const val KEY_PLAYBACK_STARTED = "boot_playback_started_session_id"
+    private const val KEY_FAILED = "failed_boot_session_id"
+    private const val KEY_POSITION_SESSION = "position_boot_session_id"
+    private const val KEY_POSITION = "position_ms"
     private const val KEY_LAST_INCREMENT_MS = "last_boot_increment_at_ms"
     private const val KEY_LAST_BOOT_COUNT = "last_os_boot_count"
     private const val KEY_LAST_BOOT_ID = "last_kernel_boot_id"
@@ -142,6 +145,27 @@ object BootSessionManager {
     fun getCurrentSession(context: Context): Long =
         prefs(context).getLong(KEY_SESSION, 0L)
 
+    fun isSessionFailed(context: Context, sessionId: Long): Boolean =
+        sessionId > 0L && prefs(context).getLong(KEY_FAILED, -1L) == sessionId
+
+    fun markSessionFailed(context: Context, sessionId: Long) {
+        if (sessionId <= 0L) return
+        prefs(context).edit().putLong(KEY_FAILED, sessionId).apply()
+        clearPlaybackStarted(context, sessionId)
+        cancelBootRetryAlarms(context)
+    }
+
+    fun playbackPosition(context: Context, sessionId: Long): Int {
+        val p = prefs(context)
+        return if (p.getLong(KEY_POSITION_SESSION, -1L) == sessionId) p.getInt(KEY_POSITION, 0) else 0
+    }
+
+    fun savePlaybackPosition(context: Context, sessionId: Long, position: Int) {
+        if (sessionId <= 0L) return
+        prefs(context).edit().putLong(KEY_POSITION_SESSION, sessionId)
+            .putInt(KEY_POSITION, position.coerceAtLeast(0)).apply()
+    }
+
     fun isSessionCompleted(context: Context, sessionId: Long): Boolean {
         if (sessionId <= 0L) return false
         return prefs(context).getLong(KEY_COMPLETED, -1L) >= sessionId
@@ -189,7 +213,7 @@ object BootSessionManager {
     fun shouldSuppressBootWarnings(context: Context): Boolean {
         val sessionId = getCurrentSession(context)
         if (sessionId <= 0L) return false
-        return isSessionCompleted(context, sessionId) || hasPlaybackStarted(context, sessionId)
+        return isSessionCompleted(context, sessionId)
     }
 
     fun markSessionCompleted(context: Context, sessionId: Long, reason: String = "completed") {
@@ -219,13 +243,19 @@ object BootSessionManager {
             val intent = Intent(context, AudioForegroundService::class.java).apply {
                 action = AudioForegroundService.ACTION_BOOT_RETRY_GREETING
             }
-            val pending = PendingIntent.getService(
+            val flags = PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+            val pending = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) PendingIntent.getForegroundService(
+                context, BOOT_RETRY_ALARM_REQUEST_BASE + index, intent, flags
+            ) else PendingIntent.getService(context, BOOT_RETRY_ALARM_REQUEST_BASE + index, intent, flags)
+            pending?.let { alarmManager.cancel(it); it.cancel() }
+            // Cancel alarms created by older app versions too (different PendingIntent type).
+            val legacy = PendingIntent.getService(
                 context,
                 BOOT_RETRY_ALARM_REQUEST_BASE + index,
                 intent,
                 PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
             )
-            pending?.let {
+            legacy?.let {
                 alarmManager.cancel(it)
                 it.cancel()
             }

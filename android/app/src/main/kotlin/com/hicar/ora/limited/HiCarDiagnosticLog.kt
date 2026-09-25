@@ -36,12 +36,15 @@ object HiCarDiagnosticLog {
     )
 
     // Số dòng giữ trong RAM (preview nhanh) và trần file trên disk.
-    private const val MAX_LINES = 200
+    private const val MAX_LINES = 1000
     private const val MAX_DISK_LINES = 1000
     private const val FILE_NAME = "hicar_diagnostic.log"
+    private const val CRITICAL_FILE_NAME = "hicar_diagnostic_critical.log"
+    private const val MAX_CRITICAL_LINES = 200
 
     private val buffer = CopyOnWriteArrayList<String>()
-    private val timeFormat = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)
+    private val critical = CopyOnWriteArrayList<String>()
+    private fun timestamp() = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS Z", Locale.US).format(Date())
 
     // Mọi thao tác I/O (append/trim/load/clear) chạy tuần tự trên 1 thread nền duy nhất
     // để vừa thread-safe vừa không chặn caller (đặc biệt luồng boot trên box yếu).
@@ -67,7 +70,7 @@ object HiCarDiagnosticLog {
     }
 
     fun markBootSession() {
-        appendRaw("----- session ${timeFormat.format(Date())} (pid=${Process.myPid()}) -----")
+        appendRaw("----- session ${timestamp()} pid=${Process.myPid()} api=${Build.VERSION.SDK_INT} model=${Build.MANUFACTURER}/${Build.MODEL} fingerprint=${Build.FINGERPRINT} -----")
     }
 
     fun d(tag: String, message: String) = write("D", tag, message)
@@ -77,11 +80,16 @@ object HiCarDiagnosticLog {
     fun e(tag: String, message: String) = write("E", tag, message)
 
     fun hasErrorLines(context: Context? = null): Boolean =
-        getFilteredErrorLines(context).isNotEmpty()
+        getFilteredErrorLines(context).any { isErrorLine(it) }
 
     fun getFullLog(): String {
-        if (buffer.isEmpty()) return ""
-        return buffer.joinToString("\n")
+        return (critical.toList() + buffer.toList()).distinct().joinToString("\n")
+    }
+
+    /** Best effort before delegating a fatal exception to Android. Cannot capture SIGKILL/power loss. */
+    fun flush() {
+        try { ioExecutor.submit {}.get(400, java.util.concurrent.TimeUnit.MILLISECONDS) }
+        catch (_: Exception) { /* Never mask the original crash. */ }
     }
 
     /** E/W lines plus a few surrounding D lines for context. */
@@ -100,8 +108,7 @@ object HiCarDiagnosticLog {
     }
 
     private fun getFilteredErrorLines(context: Context?): List<String> {
-        if (buffer.isEmpty()) return emptyList()
-        val lines = buffer.toList()
+        val lines = (critical.toList() + buffer.toList()).distinct()
         // Không lọc bỏ warning boot đã cũ ở đây. Trong thực tế lỗi xảy ra trên box
         // chậm thường chỉ còn lại trong file diagnostic sau khi UI đã mở; giữ nguyên
         // toàn bộ E/W giúp popup và báo cáo không bị "trống" mất nguyên nhân.
@@ -110,10 +117,12 @@ object HiCarDiagnosticLog {
 
     fun clear() {
         buffer.clear()
+        critical.clear()
         val ctx = storageContext ?: return
         ioExecutor.execute {
             try {
                 File(ctx.filesDir, FILE_NAME).delete()
+                File(ctx.filesDir, CRITICAL_FILE_NAME).delete()
                 diskLineCount = 0
             } catch (e: Exception) {
                 Log.e("HiCar", "Diagnostic clear failed: ${e.message}")
@@ -123,12 +132,14 @@ object HiCarDiagnosticLog {
 
     private fun write(level: String, tag: String, message: String) {
         if (tag !in ALLOWED_TAGS) return
+        val safe = message.replace(Regex("(?i)([0-9a-f]{2}:){5}[0-9a-f]{2}"), "[mac-redacted]")
+            .replace(Regex("(?i)(Bearer\\s+)[A-Za-z0-9._~-]+"), "$1[redacted]")
         when (level) {
-            "D" -> Log.d(tag, message)
-            "W" -> Log.w(tag, message)
-            "E" -> Log.e(tag, message)
+            "D" -> Log.d(tag, safe)
+            "W" -> Log.w(tag, safe)
+            "E" -> Log.e(tag, safe)
         }
-        appendRaw(formatLine(level, tag, message))
+        appendRaw(formatLine(level, tag, safe))
     }
 
     private fun appendRaw(line: String) {
@@ -141,22 +152,34 @@ object HiCarDiagnosticLog {
                 break
             }
         }
+        if (isCritical(line)) {
+            critical.add(line)
+            while (critical.size > MAX_CRITICAL_LINES) critical.removeAt(0)
+        }
         persistLine(line)
     }
 
+    // Keep errors across long readiness waits; retain resolution events to avoid stale popups.
+    private fun isCritical(line: String) =
+        line.contains(" E ") || line.contains("state=completed") || line.contains("state=cancelled") ||
+            line.contains("PREVIOUS_PROCESS_EXIT")
+
     private fun formatLine(level: String, tag: String, message: String): String {
-        val ts = timeFormat.format(Date())
+        val ts = timestamp()
         val pid = Process.myPid()
         val tid = Process.myTid()
-        return "$ts  $pid  $tid $level $tag: $message"
+        val bounded = message.replace("\n", " ↩ ").take(8192)
+        return "$ts  $pid  $tid $level $tag: $bounded elapsedMs=${android.os.SystemClock.elapsedRealtime()}"
     }
 
     private fun isErrorLine(line: String): Boolean {
-        return line.contains(" E HiCar") || line.contains(" W HiCar")
+        return Regex(" [EW] (HiCar\\w*|OverlayBridge):").containsMatchIn(line)
     }
 
     private fun loadFromDisk(context: Context) {
         try {
+            val history = File(context.filesDir, CRITICAL_FILE_NAME)
+            if (history.exists()) critical.addAll(history.readLines().takeLast(MAX_CRITICAL_LINES))
             val file = File(context.filesDir, FILE_NAME)
             if (!file.exists()) return
             val lines = file.readLines()
@@ -175,6 +198,12 @@ object HiCarDiagnosticLog {
                 val file = File(ctx.filesDir, FILE_NAME)
                 file.appendText("$line\n")
                 diskLineCount++
+                if (isCritical(line)) {
+                    val history = File(ctx.filesDir, CRITICAL_FILE_NAME)
+                    val stage = File(ctx.filesDir, "$CRITICAL_FILE_NAME.part")
+                    stage.writeText(critical.joinToString("\n", postfix = "\n"))
+                    if (!stage.renameTo(history)) throw java.io.IOException("critical log rename failed")
+                }
                 if (diskLineCount > MAX_DISK_LINES) {
                     trimDiskFile(file)
                 }

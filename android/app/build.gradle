@@ -90,22 +90,6 @@ flutter {
 dependencies {
     implementation "androidx.media:media:1.6.0"
     implementation "androidx.core:core-ktx:1.12.0"
+    testImplementation "junit:junit:4.13.2"
+    testImplementation "org.robolectric:robolectric:4.14.1"
 }
-
-def overlayPluginJavaDir = file("${System.getenv('PUB_CACHE') ?: "${System.getProperty('user.home')}/AppData/Local/Pub/Cache/hosted/pub.dev"}/flutter_overlay_window-0.5.0/android/src/main/java/flutter/overlay/window/flutter_overlay_window")
-def overlayPatchFile = file("${rootProject.projectDir}/overlay_patches/flutter/overlay/window/flutter_overlay_window/OverlayService.java")
-
-tasks.register("applyOverlayPatch") {
-    doLast {
-        if (!overlayPatchFile.exists()) {
-            println("HiCar: OverlayService patch not found, skip")
-            return
-        }
-        overlayPluginJavaDir.mkdirs()
-        def dest = new File(overlayPluginJavaDir, "OverlayService.java")
-        ant.copy(file: overlayPatchFile, tofile: dest, overwrite: true)
-        println("HiCar: applied OverlayService patch → ${dest}")
-    }
-}
-
-tasks.named("preBuild").configure { dependsOn("applyOverlayPatch") }

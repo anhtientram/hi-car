@@ -1,7 +1,6 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/audio_model.dart';
 import '../services/api_service.dart';
@@ -52,8 +51,12 @@ class AudioRepository {
     // Khi đã có lựa chọn, tuyệt đối giữ nguyên để sync không đổi cấu hình của người dùng.
     // Không lấy goodbye/custom làm greeting nếu server không trả về audio greeting.
     if (greetingId.isEmpty) {
-      final greetingCandidates =
-          updated.where((audio) => audio.type == AudioType.greeting).toList();
+      final greetingCandidates = updated
+          .where((audio) =>
+              audio.type == AudioType.greeting &&
+              audio.isDownloaded &&
+              audio.localPath != null)
+          .toList();
       if (greetingCandidates.isEmpty) {
         await saveLocalList(updated);
         return updated;
@@ -174,16 +177,21 @@ class AudioRepository {
 
   Future<String> _prepareAssetFile(String assetPath) async {
     try {
-      final tempDir = await getTemporaryDirectory();
+      final tempDir = await SyncService.instance.getAudioDir();
       final fileName = assetPath.split('/').last;
       final tempFile = File('${tempDir.path}/$fileName');
 
-      if (await tempFile.exists()) return tempFile.path;
+      if (await SyncService.instance.fileExists(tempFile.path))
+        return tempFile.path;
 
       final byteData = await rootBundle.load(assetPath);
       final buffer = byteData.buffer;
-      await tempFile.writeAsBytes(
-          buffer.asUint8List(byteData.offsetInBytes, byteData.lengthInBytes));
+      final staging = File(
+          '${tempFile.path}.${DateTime.now().microsecondsSinceEpoch}.part');
+      await staging.writeAsBytes(
+          buffer.asUint8List(byteData.offsetInBytes, byteData.lengthInBytes),
+          flush: true);
+      await staging.rename(tempFile.path);
       return tempFile.path;
     } catch (e) {
       debugPrint('Error preparing asset file: $e');

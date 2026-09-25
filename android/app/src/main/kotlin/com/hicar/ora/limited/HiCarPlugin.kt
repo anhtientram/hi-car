@@ -110,6 +110,15 @@ class HiCarPlugin : FlutterPlugin, MethodCallHandler {
     // ── Flutter → Native ───────────────────────────────────────────────────────
 
     override fun onMethodCall(call: MethodCall, result: Result) {
+        try {
+            handleMethodCall(call, result)
+        } catch (e: Exception) {
+            HiCarDiagnosticLog.e("HiCarPlugin", "channel=${call.method} ${e.stackTraceToString()}")
+            result.error("NATIVE_OPERATION_FAILED", e.message, mapOf("method" to call.method))
+        }
+    }
+
+    private fun handleMethodCall(call: MethodCall, result: Result) {
         android.util.Log.i("HiCarPlugin", "onMethodCall: ${call.method}")
         when (call.method) {
             "startService" -> {
@@ -125,6 +134,7 @@ class HiCarPlugin : FlutterPlugin, MethodCallHandler {
                 if (audioPath.isNotEmpty()) autoSyncBootFile(audioPath, "boot_greeting.mp3")
                 val intent = buildServiceIntent(AudioForegroundService.ACTION_PLAY_GREETING)
                 intent.putExtra("audioPath", audioPath)
+                intent.putExtra("automatic", call.argument<Boolean>("automatic") ?: false)
                 startServiceSafe(intent)
                 result.success(true)
             }
@@ -144,6 +154,7 @@ class HiCarPlugin : FlutterPlugin, MethodCallHandler {
                 }
                 val intent = buildServiceIntent(action).apply {
                     putExtra("audioPath", audioPath)
+                    putExtra("automatic", mode == "phone_bluetooth" || mode == "phone_android_auto")
                     putExtra(
                         AudioForegroundService.EXTRA_PREFER_BOOT_AUDIO,
                         mode == "android_box_mode"
@@ -186,8 +197,11 @@ class HiCarPlugin : FlutterPlugin, MethodCallHandler {
             "syncPrefs" -> {
                 syncPrefsToDeviceProtected()
                 syncFilesToDeviceProtected()
+                AudioForegroundService.instance?.refreshConfiguration()
                 result.success(true)
             }
+            "getPlaybackStatus" -> result.success(AudioForegroundService.instance?.playbackStatus()
+                ?: mapOf("state" to "idle"))
             "clearAuthState" -> {
                 clearAuthState()
                 result.success(true)
@@ -243,13 +257,7 @@ class HiCarPlugin : FlutterPlugin, MethodCallHandler {
                 context.filesDir
             }
             val dest = java.io.File(destDir, destName)
-            if (AudioFileValidator.isUsable(dest) && dest.length() == src.length()) return
-            val part = java.io.File(destDir, "$destName.part")
-            src.copyTo(part, overwrite = true)
-            if (dest.exists()) dest.delete()
-            if (part.length() < 128L || !part.renameTo(dest)) {
-                throw java.io.IOException("atomic boot file rename failed")
-            }
+            if (!AtomicAudioFiles.replace(src, dest)) return
             HiCarDiagnosticLog.d("HiCarPlugin", "autoSyncBootFile: $destName updated (${dest.length()} bytes)")
         } catch (e: Exception) {
             HiCarDiagnosticLog.e("HiCarPlugin", "autoSyncBootFile: error – ${e.message}")
@@ -286,6 +294,8 @@ class HiCarPlugin : FlutterPlugin, MethodCallHandler {
             }
         }
         android.util.Log.i("HiCarPlugin", "clearAuthState done")
+        AudioForegroundService.instance?.refreshConfiguration()
+        BootSessionManager.cancelBootRetryAlarms(context)
     }
 
     // ── Clear audio config (bỏ đặt lời chào / tạm biệt) ───────────────────────
@@ -329,6 +339,9 @@ class HiCarPlugin : FlutterPlugin, MethodCallHandler {
             val sourcePrefs = context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
             val destPrefs   = deviceContext.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
             val editor = destPrefs.edit()
+            // Mirror removals as well: logout/unset must not revive stale Direct Boot state.
+            destPrefs.all.keys.filter { it.startsWith("flutter.") && !sourcePrefs.contains(it) }
+                .forEach { editor.remove(it) }
             for ((key, value) in sourcePrefs.all) {
                 when (value) {
                     is String  -> editor.putString(key, value)
@@ -365,12 +378,7 @@ class HiCarPlugin : FlutterPlugin, MethodCallHandler {
                 return
             }
             val dest = java.io.File(deviceContext.filesDir, destName)
-            val part = java.io.File(deviceContext.filesDir, "$destName.part")
-            src.inputStream().use { i -> part.outputStream().use { o -> i.copyTo(o) } }
-            if (dest.exists()) dest.delete()
-            if (part.length() < 128L || !part.renameTo(dest)) {
-                throw java.io.IOException("atomic boot file rename failed")
-            }
+            if (!AtomicAudioFiles.replace(src, dest)) return
             HiCarDiagnosticLog.d("HiCarSync", "copyFileToProtected OK → ${dest.absolutePath} (${dest.length()} bytes)")
         } catch (e: Exception) {
             HiCarDiagnosticLog.e("HiCarSync", "copyFileToProtected ERROR $destName – ${e.message}")
@@ -457,6 +465,7 @@ class HiCarPlugin : FlutterPlugin, MethodCallHandler {
                 AudioForegroundService.connectionMode = mode
                 context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
                     .edit().putString("flutter.connection_mode", mode).apply()
+                AudioForegroundService.instance?.refreshConfiguration()
                 result.success(true)
             }
             "openApp" -> openApp(result)

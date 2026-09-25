@@ -38,13 +38,11 @@ class BootReceiver : BroadcastReceiver() {
                 }
                 // FLAG_UPDATE_CURRENT: nếu còn PendingIntent cũ (session trước) thì cập nhật
                 // extras (session id mới) thay vì dùng lại extras cũ đã stale.
-                val pending = PendingIntent.getService(
-                    context,
-                    BootSessionManager.BOOT_RETRY_ALARM_REQUEST_BASE + index,
-                    intent,
-                    PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_UPDATE_CURRENT or
-                        PendingIntent.FLAG_IMMUTABLE
-                )
+                val flags = PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                val request = BootSessionManager.BOOT_RETRY_ALARM_REQUEST_BASE + index
+                val pending = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    PendingIntent.getForegroundService(context, request, intent, flags)
+                } else PendingIntent.getService(context, request, intent, flags)
                 alarmManager.set(
                     AlarmManager.ELAPSED_REALTIME_WAKEUP,
                     SystemClock.elapsedRealtime() + delayMs,
@@ -79,9 +77,10 @@ class BootReceiver : BroadcastReceiver() {
             HiCarDiagnosticLog.d("HiCarBoot", "Boot skip – mode=$connectionMode (not box)")
             return
         }
+        if (!prefs.getBoolean("flutter.auto_play_enabled", true)) return
 
-        if (!prefs.contains("flutter.auth_token")) {
-            HiCarDiagnosticLog.e("HiCarBoot", "Boot skip – no auth_token in prefs")
+        if (prefs.getString("flutter.auth_token", "").isNullOrEmpty()) {
+            HiCarDiagnosticLog.d("HiCarBoot", "Boot skip – logged out")
             return
         }
 
@@ -106,8 +105,8 @@ class BootReceiver : BroadcastReceiver() {
             return
         }
 
-        if (isUnlockRetry && BootSessionManager.hasPlaybackStarted(context, bootSessionId)) {
-            HiCarDiagnosticLog.d("HiCarBoot", "Unlock retry skip – boot session $bootSessionId đã bắt đầu phát")
+        if (BootSessionManager.isSessionFailed(context, bootSessionId)) {
+            HiCarDiagnosticLog.w("HiCarBoot", "Boot session=$bootSessionId requires user retry after player errors")
             return
         }
 
@@ -120,14 +119,12 @@ class BootReceiver : BroadcastReceiver() {
         }
 
         try {
+            // Keep a recovery path even if the first service start is rejected by the OS.
+            if (!isUnlockRetry) scheduleBootRetryAlarms(context)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(serviceIntent)
             } else {
                 context.startService(serviceIntent)
-            }
-            // Chỉ lên lịch alarm retry cho boot thật (không phải unlock retry).
-            if (!isUnlockRetry) {
-                scheduleBootRetryAlarms(context)
             }
         } catch (e: Exception) {
             HiCarDiagnosticLog.e("HiCarBoot", "startForegroundService failed: ${e.message}")

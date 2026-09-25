@@ -35,13 +35,17 @@ class _IncidentOverlayState extends State<IncidentOverlay> {
                   child: SafeArea(
                     child: Align(
                       alignment: Alignment.topCenter,
-                      child: _IncidentCard(
+                      child: SingleChildScrollView(
+                          child: _IncidentCard(
                         incident: incident,
                         isSending: _sendingIncidentId == incident.id,
                         onClose: AppLogger.instance.dismissIncident,
-                        onRetry: () => _retryIncident(incident),
+                        onRetry: incident.type == 'native_playback_error' ||
+                                incident.message.contains('PLAYBACK_FAILED')
+                            ? () => _retryIncident(incident)
+                            : null,
                         onSend: () => _sendIncident(incident),
-                      ),
+                      )),
                     ),
                   ),
                 ),
@@ -55,7 +59,7 @@ class _IncidentOverlayState extends State<IncidentOverlay> {
   Future<void> _sendIncident(AppLog incident) async {
     setState(() => _sendingIncidentId = incident.id);
     try {
-      final diagnostic = await ServiceChannel.instance.getDiagnosticLogErrors();
+      final diagnostic = await ServiceChannel.instance.getDiagnosticLogFull();
       await AppLogger.instance.sendReport(
         incident,
         diagnosticLog: diagnostic,
@@ -101,7 +105,7 @@ class _IncidentCard extends StatelessWidget {
   final AppLog incident;
   final bool isSending;
   final VoidCallback onClose;
-  final VoidCallback onRetry;
+  final VoidCallback? onRetry;
   final VoidCallback onSend;
 
   const _IncidentCard({
@@ -170,11 +174,21 @@ class _IncidentCard extends StatelessWidget {
                 if (connection != null) 'Kết nối: $connection',
                 if (device != null) 'Thiết bị: $device',
                 if (os != null) 'OS: $os',
-                if (incident.incidentId != null) 'Mã: ${incident.incidentId}',
+                if (incident.incidentId != null)
+                  'Mã báo cáo: ${incident.incidentId}',
               ].join('\n'),
               style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
             ),
           ],
+          ExpansionTile(
+            title:
+                const Text('Chi tiết kỹ thuật', style: TextStyle(fontSize: 12)),
+            tilePadding: EdgeInsets.zero,
+            children: [
+              SelectableText(incident.message,
+                  style: const TextStyle(fontSize: 11))
+            ],
+          ),
           const SizedBox(height: 14),
           Wrap(
             alignment: WrapAlignment.end,
@@ -185,11 +199,12 @@ class _IncidentCard extends StatelessWidget {
                 onPressed: isSending ? null : onClose,
                 child: const Text('Đóng'),
               ),
-              OutlinedButton.icon(
-                onPressed: isSending ? null : onRetry,
-                icon: const Icon(Icons.refresh_rounded, size: 16),
-                label: const Text('Thử lại'),
-              ),
+              if (onRetry != null)
+                OutlinedButton.icon(
+                  onPressed: isSending ? null : onRetry,
+                  icon: const Icon(Icons.refresh_rounded, size: 16),
+                  label: const Text('Thử lại'),
+                ),
               FilledButton.icon(
                 onPressed: isSending ? null : onSend,
                 icon: isSending

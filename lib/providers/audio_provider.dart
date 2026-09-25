@@ -36,6 +36,13 @@ class AudioProvider extends ChangeNotifier {
   // 🟢 Chặn kích hoạt phát chồng lấn trong khoảng thời gian khởi động (boot + mở app +
   //    resume có thể gọi gần như đồng thời). Tránh ngắt/phát lại từ đầu.
   bool _isStartingPlayback = false;
+  bool _nativePending = false;
+  bool _checkingNativeStatus = false;
+  bool get isNativePlaybackBusy =>
+      _isStartingPlayback ||
+      _nativePending ||
+      _isNativeGreetingPlaying ||
+      _isNativeGoodbyePlaying;
 
   String? get _effectiveGoodbyeId =>
       (_activeGoodbyeId == null || _activeGoodbyeId!.isEmpty)
@@ -116,7 +123,10 @@ class AudioProvider extends ChangeNotifier {
 
   // ===== Init =====
 
-  Future<void> init() async {
+  Future<void>? _initialization;
+  Future<void> init() => _initialization ??= _initialize();
+
+  Future<void> _initialize() async {
     _audioList = await AudioRepository.instance.loadLocalAudioList();
 
     final prefs = await SharedPreferences.getInstance();
@@ -141,6 +151,16 @@ class AudioProvider extends ChangeNotifier {
       ServiceChannel.instance.importNativeDiagnostics().catchError((_) {});
     });
 
+    ServiceChannel.instance.onPlaybackFailed = () {
+      _stopNativePlaybackState(isManual: true);
+    };
+    ServiceChannel.instance.onPlaybackPending = (type) {
+      _nativePending = true;
+      _isNativeGreetingPlaying = false;
+      _isNativeGoodbyePlaying = false;
+      _startWatchdog();
+      notifyListeners();
+    };
     ServiceChannel.instance.onPlaybackComplete = () {
       debugPrint('🔔 [AudioProvider] NHẬN TÍN HIỆU: PHÁT XONG TỪ NATIVE');
       // Nếu là tự động phát xong (không phải bấm dừng thủ công)
@@ -150,6 +170,8 @@ class AudioProvider extends ChangeNotifier {
     ServiceChannel.instance.onPlaybackStarted = (type) {
       debugPrint(
           '🔔 [AudioProvider] NHẬN TÍN HIỆU: BẮT ĐẦU PHÁT TỪ NATIVE ($type)');
+      _nativePending = false;
+      _startWatchdog();
       _isNativeGreetingPlaying = type == 'greeting';
       _isNativeGoodbyePlaying = type == 'goodbye';
       notifyListeners();
@@ -213,6 +235,13 @@ class AudioProvider extends ChangeNotifier {
       _lastSyncTime = DateTime.now();
       _syncStatus = SyncStatus.success;
       _syncMessage = 'Đồng bộ hoàn tất (${updated.length} file)';
+      final failures = SyncService.instance.lastSyncFailures;
+      if (failures.isNotEmpty) {
+        _syncStatus = SyncStatus.error;
+        _syncError =
+            'Còn ${failures.length} file chưa tải được; đã giữ nhạc cũ.';
+        _syncMessage = _syncError!;
+      }
 
       // 🟢 Khôi phục lựa chọn lời chào/tạm biệt đã setup từ prefs để 2 nút giữ nguyên
       //    cấu hình sau khi đăng nhập lại / đồng bộ.
@@ -335,150 +364,58 @@ class AudioProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<bool> playGreetingViaNative({bool allowAutostartRetry = false}) async {
-    // 🟢 Đang trong quá trình khởi động phát khác → bỏ qua để tránh phát chồng/ngắt.
-    if (_isStartingPlayback) {
-      debugPrint('AudioProvider: playGreeting bỏ qua (đang khởi động phát)');
-      return false;
-    }
+  Future<bool> playGreetingViaNative({bool allowAutostartRetry = false}) =>
+      _playViaNative(greeting: true, automatic: allowAutostartRetry);
 
-    final audio = activeGreeting;
+  Future<bool> playGoodbyeViaNative() => _playViaNative(greeting: false);
+
+  Future<bool> _playViaNative(
+      {required bool greeting, bool automatic = false}) async {
+    // Acquire before the first await (path lookup can race open/resume/overlay).
+    if (_isStartingPlayback || (automatic && isNativePlaybackBusy))
+      return false;
+    _isStartingPlayback = true;
     String? path;
-
-    if (audio != null) {
-      path = await AudioRepository.instance.getGreetingAudioPath(audio);
-    } else {
-      // Fallback: audioList may not be loaded yet, read persisted path
-      final prefs = await SharedPreferences.getInstance();
-      path = prefs.getString('greeting_audio_path');
-      debugPrint(
-          'AudioProvider: No active greeting in list, fallback path=$path');
-    }
-
-    if (path == null || path.isEmpty) {
-      debugPrint('AudioProvider: No active greeting found');
-      final prefs = await SharedPreferences.getInstance();
-      AppLogger.instance.log(
-        'Không có file nhạc chào để phát',
-        type: 'incident_error',
-        userMessage:
-            'Chưa có nhạc chào hợp lệ trên thiết bị. Hãy đồng bộ nhạc hoặc chọn lại nhạc chào.',
-        requiresAction: true,
-        details: {
-          'mode': prefs.getString('connection_mode') ?? 'unknown',
-        },
-      );
-      return false;
-    }
-
-    debugPrint('AudioProvider: playGreetingViaNative path=$path');
-
-    _isStartingPlayback = true;
+    String mode = 'unknown';
     try {
-      // Trạng thái "đang phát" chỉ bật khi native gọi onPlaybackStarted — tránh UI ảo.
-      _isNativeGoodbyePlaying = false;
-
-      // Delay ngắn (~1.5s) cho BT/AA/Màn Độ để audio focus ổn định. Box boot do native xử lý riêng.
       final prefs = await SharedPreferences.getInstance();
-      final mode = prefs.getString('connection_mode');
-      if (mode != 'android_box_mode') {
-        await Future.delayed(const Duration(milliseconds: 1500));
+      mode = prefs.getString('connection_mode') ?? 'unknown';
+      if (automatic &&
+          (mode != 'android_screen_mode' ||
+              prefs.getBool('play_on_open') == false ||
+              prefs.getBool(AppConstants.keyAutoPlayEnabled) == false ||
+              (prefs.getString(AppConstants.keyAuthToken) ?? '').isEmpty))
+        return false;
+      final audio = greeting ? activeGreeting : activeGoodbye;
+      if (audio != null) {
+        path = greeting
+            ? await AudioRepository.instance.getGreetingAudioPath(audio)
+            : await AudioRepository.instance.getGoodbyeAudioPath(audio);
       }
-
-      await ServiceChannel.instance.playGreeting(audioPath: path);
-      _startWatchdog(audio?.durationSeconds ?? 15);
+      path ??= prefs
+          .getString(greeting ? 'greeting_audio_path' : 'goodbye_audio_path');
+      if (path == null || path.isEmpty)
+        throw StateError('FILE_INVALID: chưa chọn/tải nhạc');
+      // Do not manufacture a completion from metadata duration. Native owns timing/recovery.
+      _nativePending = true;
+      if (greeting) {
+        await ServiceChannel.instance
+            .playGreeting(audioPath: path, automatic: automatic);
+      } else {
+        await ServiceChannel.instance.playGoodbye(audioPath: path);
+      }
+      _startWatchdog();
       return true;
-    } catch (e) {
-      debugPrint('AudioProvider: playGreetingViaNative error: $e');
+    } catch (e, stack) {
       AppLogger.instance.log(
-        'Lỗi phát lời chào (Native): $e',
+        'Không khởi động được native playback: $e',
         type: 'native_playback_error',
         userMessage:
-            'Thiết bị không phát được nhạc chào. Hãy kiểm tra quyền âm thanh và kết nối xe.',
+            'Không khởi động được nhạc ${greeting ? "chào" : "tạm biệt"}. Kiểm tra file nhạc và gửi báo lỗi để xem nguyên nhân.',
         requiresAction: true,
-        details: {
-          'path': path,
-          'error': e.toString(),
-          'mode': (await SharedPreferences.getInstance())
-                  .getString('connection_mode') ??
-              'unknown',
-        },
+        details: {'mode': mode, 'path': path, 'error': '$e', 'stack': '$stack'},
       );
-      _stopNativePlaybackState();
-      if (allowAutostartRetry) {
-        debugPrint('AudioProvider: autostart retry sau 15s...');
-        await Future.delayed(const Duration(seconds: 15));
-        return playGreetingViaNative(allowAutostartRetry: false);
-      }
-      return false;
-    } finally {
-      _isStartingPlayback = false;
-    }
-  }
-
-  Future<bool> playGoodbyeViaNative() async {
-    // 🟢 Đang trong quá trình khởi động phát khác → bỏ qua để tránh phát chồng/ngắt.
-    if (_isStartingPlayback) {
-      debugPrint('AudioProvider: playGoodbye bỏ qua (đang khởi động phát)');
-      return false;
-    }
-
-    final audio = activeGoodbye;
-    var path = await AudioRepository.instance.getGoodbyeAudioPath(audio);
-
-    if (path == null || path.isEmpty) {
-      final prefs = await SharedPreferences.getInstance();
-      path = prefs.getString('goodbye_audio_path');
-      debugPrint('AudioProvider: goodbye fallback path=$path');
-    }
-
-    if (path == null || path.isEmpty) {
-      debugPrint('AudioProvider: No active goodbye found');
-      final prefs = await SharedPreferences.getInstance();
-      AppLogger.instance.log(
-        'Không có file nhạc tạm biệt để phát',
-        type: 'incident_error',
-        userMessage: 'Chưa có file nhạc tạm biệt hợp lệ trên thiết bị.',
-        requiresAction: true,
-        details: {
-          'mode': prefs.getString('connection_mode') ?? 'unknown',
-        },
-      );
-      return false;
-    }
-
-    _isStartingPlayback = true;
-    try {
-      // Trạng thái "đang phát" chỉ bật khi native gọi onPlaybackStarted.
-      _isNativeGreetingPlaying = false;
-
-      // Add a small delay for non-box modes to ensure connection is stable and audio focus is granted
-      final prefs = await SharedPreferences.getInstance();
-      final mode = prefs.getString('connection_mode');
-      if (mode != 'android_box_mode') {
-        await Future.delayed(const Duration(milliseconds: 1500));
-      }
-
-      await ServiceChannel.instance.playGoodbye(audioPath: path);
-      _startWatchdog(audio.durationSeconds > 0 ? audio.durationSeconds : 15);
-      return true;
-    } catch (e) {
-      debugPrint('AudioProvider: playGoodbyeViaNative error: $e');
-      AppLogger.instance.log(
-        'Lỗi phát lời tạm biệt (Native): $e',
-        type: 'native_playback_error',
-        userMessage:
-            'Thiết bị không phát được nhạc tạm biệt. Hãy kiểm tra kết nối xe.',
-        requiresAction: true,
-        details: {
-          'path': path,
-          'error': e.toString(),
-          'mode': (await SharedPreferences.getInstance())
-                  .getString('connection_mode') ??
-              'unknown',
-        },
-      );
-      _stopNativePlaybackState();
+      _stopNativePlaybackState(isManual: true);
       return false;
     } finally {
       _isStartingPlayback = false;
@@ -500,24 +437,63 @@ class AudioProvider extends ChangeNotifier {
     }
   }
 
-  void _startWatchdog(int durationSeconds) {
+  void _startWatchdog() {
     _playbackWatchdog?.cancel();
-    // Use duration + 5s buffer, or default 60s if duration is unknown/zero
-    final timeout = (durationSeconds > 0) ? durationSeconds + 5 : 60;
-    _playbackWatchdog = Timer(Duration(seconds: timeout), () {
-      if (_isNativeGreetingPlaying || _isNativeGoodbyePlaying) {
-        debugPrint(
-            '⚠️ [AudioProvider] Watchdog triggered: Force stopping animation');
-        AppLogger.instance.log(
-          'Watchdog kích hoạt: Force stop animation (Native)',
-          type: 'native_playback_error',
-          userMessage:
-              'Ứng dụng không nhận được tín hiệu phát nhạc hoàn tất từ thiết bị.',
-          requiresAction: true,
-        );
-        _stopNativePlaybackState(isManual: false);
-      }
+    _playbackWatchdog = Timer.periodic(const Duration(seconds: 10), (_) {
+      reconcileNativePlayback();
     });
+  }
+
+  /// Reconcile after sleep/resume or a lost callback; only native completion means success.
+  Future<void> reconcileNativePlayback() async {
+    if (_checkingNativeStatus) return;
+    _checkingNativeStatus = true;
+    try {
+      final status = await ServiceChannel.instance.getPlaybackStatus();
+      if (status == null) return;
+      switch (status['state']) {
+        case 'playing':
+          _nativePending = false;
+          _isNativeGreetingPlaying = status['type'] == 'greeting';
+          _isNativeGoodbyePlaying = status['type'] == 'goodbye';
+          _playbackWatchdog ??= Timer.periodic(
+              const Duration(seconds: 10), (_) => reconcileNativePlayback());
+          notifyListeners();
+          break;
+        case 'waiting_route':
+        case 'waiting_focus':
+        case 'preparing':
+        case 'retrying':
+          _nativePending = true;
+          _isNativeGreetingPlaying = false;
+          _isNativeGoodbyePlaying = false;
+          _playbackWatchdog ??= Timer.periodic(
+              const Duration(seconds: 10), (_) => reconcileNativePlayback());
+          notifyListeners();
+          break;
+        case 'completed':
+          if (isNativePlaybackBusy) _stopNativePlaybackState(isManual: false);
+          break;
+        case 'failed':
+        case 'cancelled':
+          if (isNativePlaybackBusy) _stopNativePlaybackState(isManual: true);
+          break;
+        case 'idle':
+          if (isNativePlaybackBusy && !_isStartingPlayback) {
+            AppLogger.instance.log(
+                'Native playback mất trạng thái trước khi hoàn tất',
+                type: 'native_playback_error',
+                requiresAction: true,
+                userMessage:
+                    'Phiên phát nhạc đã bị gián đoạn. Bạn có thể thử lại và gửi báo lỗi.',
+                details: {'native_status': status});
+            _stopNativePlaybackState(isManual: true);
+          }
+          break;
+      }
+    } finally {
+      _checkingNativeStatus = false;
+    }
   }
 
   bool _isStoppingManually = false;
@@ -532,6 +508,8 @@ class AudioProvider extends ChangeNotifier {
     }
 
     _playbackWatchdog?.cancel();
+    _playbackWatchdog = null;
+    _nativePending = false;
     _player.stop();
     _isPlaying = false;
     _currentlyPlaying = null;
@@ -592,6 +570,11 @@ class AudioProvider extends ChangeNotifier {
 
   @override
   void dispose() {
+    _playbackWatchdog?.cancel();
+    ServiceChannel.instance.onPlaybackStarted = null;
+    ServiceChannel.instance.onPlaybackComplete = null;
+    ServiceChannel.instance.onPlaybackFailed = null;
+    ServiceChannel.instance.onPlaybackPending = null;
     _player.dispose();
     super.dispose();
   }

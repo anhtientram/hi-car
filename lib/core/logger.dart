@@ -63,6 +63,7 @@ class AppLogger extends ChangeNotifier {
   static const _maxPersistedLogs = 120;
   final Set<String> _dismissedIncidentIds = <String>{};
   AppLog? _activeIncident;
+  Future<void> _persistQueue = Future<void>.value();
 
   List<AppLog> get logs => List.unmodifiable(_logs.reversed);
   AppLog? get activeIncident => _activeIncident;
@@ -78,11 +79,14 @@ class AppLogger extends ChangeNotifier {
     'incident_error',
     'permission_error',
     'route_error',
+    'overlay_error',
     'native_warning',
   };
 
   Future<void> init() async {
     try {
+      _activeIncident = null;
+      _logs.clear();
       final prefs = await SharedPreferences.getInstance();
       _dismissedIncidentIds
         ..clear()
@@ -125,19 +129,23 @@ class AppLogger extends ChangeNotifier {
     final newLog = AppLog(
       id: DateTime.now().microsecondsSinceEpoch.toString(),
       timestamp: DateTime.now(),
-      message: message,
+      message: _redactText(message),
       type: type,
-      details: details,
+      details: _safeDetails(details),
       userMessage: userMessage,
-      incidentId: incidentId,
+      incidentId: incidentId ??
+          (requiresAction
+              ? 'app-${DateTime.now().microsecondsSinceEpoch}'
+              : null),
       requiresAction: requiresAction,
     );
     _logs.add(newLog);
-    if (_logs.length > 50) {
+    if (_logs.length > _maxPersistedLogs) {
       _logs.removeAt(0);
     }
-    if (requiresAction) _activeIncident = newLog;
-    debugPrint('📝 [LOG]: $message');
+    if (requiresAction && !_dismissedIncidentIds.contains(newLog.incidentId))
+      _activeIncident = newLog;
+    debugPrint('📝 [LOG]: ${newLog.message}');
     _persist();
     notifyListeners();
   }
@@ -153,13 +161,21 @@ class AppLogger extends ChangeNotifier {
   }
 
   void markIncidentResolved(String? incidentId) {
+    if (incidentId != null) {
+      _dismissedIncidentIds.add(incidentId);
+      _persistDismissedIncidents();
+    }
     if (incidentId == null || _activeIncident?.incidentId == incidentId) {
-      if (incidentId != null) {
-        _dismissedIncidentIds.add(incidentId);
-        _persistDismissedIncidents();
-      }
       _activeIncident = null;
       notifyListeners();
+    }
+  }
+
+  void resolvePlaybackJob(String jobId) {
+    for (final log in _logs) {
+      if (log.message.contains('job=$jobId ') && log.incidentId != null) {
+        markIncidentResolved(log.incidentId);
+      }
     }
   }
 
@@ -210,25 +226,35 @@ class AppLogger extends ChangeNotifier {
     return 'unknown';
   }
 
-  Future<void> _persist() async {
+  Future<void> _persist() {
+    final snapshot = jsonEncode(_logs.map((item) => item.toJson()).toList());
+    _persistQueue = _persistQueue.then((_) => _writeSnapshot(snapshot));
+    return _persistQueue;
+  }
+
+  Future<void> flush() => _persistQueue;
+
+  Future<void> _writeSnapshot(String snapshot) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final start = _logs.length > _maxPersistedLogs
-          ? _logs.length - _maxPersistedLogs
-          : 0;
       await prefs.setString(
         _prefsKey,
-        jsonEncode(_logs.sublist(start).map((item) => item.toJson()).toList()),
+        snapshot,
       );
     } catch (e) {
       debugPrint('AppLogger.persist lỗi: $e');
     }
   }
 
-  Future<void> _persistDismissedIncidents() async {
+  Future<void> _persistDismissedIncidents() {
+    final ids = _dismissedIncidentIds.toList();
+    _persistQueue = _persistQueue.then((_) => _writeDismissedIncidents(ids));
+    return _persistQueue;
+  }
+
+  Future<void> _writeDismissedIncidents(List<String> ids) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final ids = _dismissedIncidentIds.toList();
       await prefs.setStringList(
         _dismissedIncidentsKey,
         ids.length > 200 ? ids.sublist(ids.length - 200) : ids,
@@ -248,6 +274,9 @@ class AppLogger extends ChangeNotifier {
       parts.add(_redactText(userNote.trim()));
     }
     parts.add(_redactText(log.message));
+    parts.add(
+        'incident=${log.incidentId} timestamp=${log.timestamp.toIso8601String()} timezone=${DateTime.now().timeZoneName}');
+    parts.add(jsonEncode(_safeDetails(log.details)));
     if (diagnosticLog != null && diagnosticLog.trim().isNotEmpty) {
       parts
           .add('\n--- HiCar adb log ---\n${_redactText(diagnosticLog.trim())}');
@@ -279,7 +308,11 @@ class AppLogger extends ChangeNotifier {
       'app_version': deviceContext['app_version'],
       'sync_status': syncStatus,
       'incident_id': log.incidentId,
-      'details': _safeDetails(log.details),
+      'details': _safeDetails({
+        ...?log.details,
+        if (deviceContext['metadata_errors'] != null)
+          'metadata_errors': deviceContext['metadata_errors'],
+      }),
     });
 
     removeLog(log.id);
@@ -295,23 +328,29 @@ class AppLogger extends ChangeNotifier {
           key.contains('authorization')) {
         result[entry.key] = '[redacted]';
       } else {
-        result[entry.key] = entry.value is String
-            ? _redactText(entry.value as String)
-            : entry.value;
+        result[entry.key] = _safeValue(entry.value);
       }
     }
     return result;
   }
 
+  dynamic _safeValue(dynamic value) {
+    if (value is String) return _redactText(value);
+    if (value is Map) return _safeDetails(Map<String, dynamic>.from(value));
+    if (value is Iterable) return value.map(_safeValue).toList();
+    return value;
+  }
+
   String _redactText(String value) {
-    var redacted = value.replaceAll(
-        RegExp(r'(bearer\s+)[^\s,]+', caseSensitive: false), r'\1[redacted]');
-    redacted = redacted.replaceAll(
+    var redacted = value.replaceAllMapped(
+        RegExp(r'(bearer\s+)[^\s,]+', caseSensitive: false),
+        (match) => '${match[1]}[redacted]');
+    redacted = redacted.replaceAllMapped(
         RegExp(
           r'(token|access_token|api_key|password|authorization)(\s*[:=]\s*|%3d)[^\s&;,]+',
           caseSensitive: false,
         ),
-        r'\1=[redacted]');
+        (match) => '${match[1]}=[redacted]');
     redacted = redacted.replaceAll(
       RegExp(r'\b([0-9a-f]{2}:){5}[0-9a-f]{2}\b', caseSensitive: false),
       '[mac-redacted]',

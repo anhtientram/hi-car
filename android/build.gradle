@@ -9,6 +9,19 @@ rootProject.layout.buildDirectory.set(file("../build"))
 subprojects { subproject ->
     subproject.layout.buildDirectory.set(rootProject.layout.buildDirectory.dir(subproject.name))
     subproject.evaluationDependsOn(':app')
+    if (subproject.name == 'flutter_overlay_window') {
+        subproject.afterEvaluate {
+            // Patch this build only; never mutate the developer's global Pub cache.
+            def patchedSources = subproject.layout.buildDirectory.dir("hicarOverlaySources")
+            def prepareSources = subproject.tasks.register("prepareHiCarOverlaySources", Sync) {
+                from(subproject.file("src/main/java")) { exclude "**/OverlayService.java" }
+                from(rootProject.file("overlay_patches"))
+                into(patchedSources)
+            }
+            subproject.android.sourceSets.main.java.setSrcDirs([patchedSources])
+            subproject.tasks.named("preBuild").configure { dependsOn(prepareSources) }
+        }
+    }
 }
 
 tasks.register("clean", Delete) {

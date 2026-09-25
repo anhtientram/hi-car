@@ -30,7 +30,7 @@
 
     <application
         android:label="Chào Xe Tự Động"
-        android:name="${applicationName}"
+        android:name="com.hicar.ora.limited.HiCarApplication"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="true"
         android:hardwareAccelerated="true">

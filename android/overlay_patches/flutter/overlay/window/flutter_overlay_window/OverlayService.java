@@ -90,39 +90,50 @@ public class OverlayService extends Service implements View.OnTouchListener {
     public void onDestroy() {
         Log.d("OverLay", "Destroying the overlay window service");
         if (windowManager != null) {
-            windowManager.removeView(flutterView);
+            try { windowManager.removeView(flutterView); }
+            catch (Exception e) { diagnosticError("overlay_remove_view", e); }
             windowManager = null;
-            flutterView.detachFromFlutterEngine();
+            if (flutterView != null) flutterView.detachFromFlutterEngine();
             flutterView = null;
         }
+        mAnimationHandler.removeCallbacksAndMessages(null);
+        if (mTrayAnimationTimer != null) mTrayAnimationTimer.cancel();
         isRunning = false;
         NotificationManager notificationManager = (NotificationManager) getApplicationContext().getSystemService(Context.NOTIFICATION_SERVICE);
         notificationManager.cancel(OverlayConstants.NOTIFICATION_ID);
         instance = null;
+        super.onDestroy();
     }
 
     @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR1)
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         mResources = getApplicationContext().getResources();
-        int startX = intent.getIntExtra("startX", OverlayConstants.DEFAULT_XY);
-        int startY = intent.getIntExtra("startY", OverlayConstants.DEFAULT_XY);
-        boolean isCloseWindow = intent.getBooleanExtra(INTENT_EXTRA_IS_CLOSE_WINDOW, false);
+        // START_STICKY delivers a null intent after process death.
+        int startX = intent == null ? OverlayConstants.DEFAULT_XY : intent.getIntExtra("startX", OverlayConstants.DEFAULT_XY);
+        int startY = intent == null ? OverlayConstants.DEFAULT_XY : intent.getIntExtra("startY", OverlayConstants.DEFAULT_XY);
+        android.content.SharedPreferences prefs = getSharedPreferences("FlutterSharedPreferences", MODE_PRIVATE);
+        boolean allowed = "android_screen_mode".equals(prefs.getString("flutter.connection_mode", ""))
+                && prefs.getBoolean("flutter.is_bubble_enabled", true)
+                && !prefs.getString("flutter.auth_token", "").isEmpty()
+                && (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || android.provider.Settings.canDrawOverlays(this));
+        boolean isCloseWindow = !allowed || (intent != null && intent.getBooleanExtra(INTENT_EXTRA_IS_CLOSE_WINDOW, false));
         if (isCloseWindow) {
             if (windowManager != null) {
-                windowManager.removeView(flutterView);
+                try { windowManager.removeView(flutterView); }
+                catch (Exception e) { diagnosticError("overlay_close_view", e); }
                 windowManager = null;
                 flutterView.detachFromFlutterEngine();
-                stopSelf();
             }
             isRunning = false;
-            return START_STICKY;
+            stopSelf();
+            return START_NOT_STICKY;
         }
         if (windowManager != null) {
-            windowManager.removeView(flutterView);
+            try { windowManager.removeView(flutterView); }
+            catch (Exception e) { diagnosticError("overlay_replace_view", e); }
             windowManager = null;
             flutterView.detachFromFlutterEngine();
-            stopSelf();
         }
         isRunning = true;
         Log.d("onStartCommand", "Service started");
@@ -181,7 +192,14 @@ public class OverlayService extends Service implements View.OnTouchListener {
         }
         params.gravity = WindowSetup.gravity;
         flutterView.setOnTouchListener(this);
-        windowManager.addView(flutterView, params);
+        try {
+            windowManager.addView(flutterView, params);
+        } catch (Exception e) {
+            diagnosticError("overlay_add_view", e);
+            isRunning = false;
+            stopSelf();
+            return START_NOT_STICKY;
+        }
         flutterView.post(this::applyInitialOverlayPosition);
         return START_STICKY;
     }
@@ -339,6 +357,7 @@ public class OverlayService extends Service implements View.OnTouchListener {
 
     @Override
     public void onCreate() {
+        super.onCreate();
         // Get the cached FlutterEngine
         FlutterEngine flutterEngine = FlutterEngineCache.getInstance().get(OverlayConstants.CACHED_TAG);
 
@@ -394,8 +413,19 @@ public class OverlayService extends Service implements View.OnTouchListener {
                     "register", FlutterEngine.class, Context.class);
             register.invoke(null, flutterEngine, getApplicationContext());
         } catch (Exception e) {
-            Log.w("OverlayService", "OverlayBridge register skipped: " + e.getMessage());
+            diagnosticError("overlay_bridge_register", e);
         }
+    }
+
+    private void diagnosticError(String stage, Exception error) {
+        String message = "mode=android_screen_mode stage=" + stage + " " + Log.getStackTraceString(error);
+        Log.e("OverlayBridge", message);
+        try {
+            Class<?> log = Class.forName("com.hicar.ora.limited.HiCarDiagnosticLog");
+            Object logger = log.getField("INSTANCE").get(null);
+            log.getMethod("init", Context.class).invoke(logger, getApplicationContext());
+            log.getMethod("e", String.class, String.class).invoke(logger, "OverlayBridge", message);
+        } catch (Exception ignored) { /* Logcat remains available if app bridge is unavailable. */ }
     }
 
     private int dragSlopPxSq() {

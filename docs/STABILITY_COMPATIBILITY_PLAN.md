@@ -359,7 +359,7 @@ Tạo fake adapter và unit tests mô phỏng:
 - overlay isolate sống còn isolate chính chết;
 - đổi mode trong lúc đang pending.
 
-## 9. Trạng thái triển khai đợt này
+## 9. Trạng thái triển khai đợt nền tảng trước
 
 Đã triển khai các hạng mục nền tảng sau:
 
@@ -382,7 +382,7 @@ Mỗi test phải kiểm tra cả:
 - session có hoàn tất sai hay không;
 - báo cáo lỗi có đủ event hay không.
 
-## 9. Regression gate sau mỗi thay đổi
+## 9.1. Regression gate sau mỗi thay đổi
 
 Không merge thay đổi mode nếu chưa kiểm tra:
 

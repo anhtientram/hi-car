@@ -220,7 +220,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   SizedBox(height: 20.h),
                   Center(
                     child: Text(
-                      'Giọng Thương Gia v$_appVersion (Limited Edition)',
+                      'Giọng Thương Gia v$_appVersion (Beta Version)',
                       style: TextStyle(
                         color: AppColors.textHint,
                         fontSize: 11.sp,
