@@ -462,6 +462,8 @@ class AudioProvider extends ChangeNotifier {
           break;
         case 'waiting_route':
         case 'waiting_focus':
+        case 'waiting_start':
+        case 'waiting_file':
         case 'preparing':
         case 'retrying':
           _nativePending = true;

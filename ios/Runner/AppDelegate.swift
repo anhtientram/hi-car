@@ -61,7 +61,8 @@ import AppIntents
         }
       case "retryGreeting":
         Task {
-          result(await HiCarAudioPlayer.shared.playWhenRouteReady(type: "greeting"))
+          let outcome = await HiCarAudioPlayer.shared.playWhenRouteReady(type: "greeting")
+          result(outcome == .started || outcome == .pending)
         }
       case "playGoodbye":
         let path = (args?["audioPath"] as? String) ?? ""
@@ -143,6 +144,54 @@ struct IOSPlaybackLease {
   }
 }
 
+enum IOSPlaybackOutcome: Equatable {
+  case started, pending, notConfigured, failed, cancelled, disabled, loginRequired
+
+  func message(type: String) -> String {
+    let name = type == "greeting" ? "lời chào" : "lời tạm biệt"
+    switch self {
+    case .started: return "Đang phát \(name)."
+    case .pending: return "Đang chờ âm thanh sẵn sàng để phát \(name)."
+    case .notConfigured: return "Chưa cài \(name). Hãy chọn nhạc trong HiCar."
+    case .failed: return "Không khởi động được âm thanh. Mở HiCar để thử lại hoặc gửi báo lỗi."
+    case .cancelled: return "Lượt phát đã dừng hoặc bị gián đoạn."
+    case .disabled: return "Tự động phát đang tắt trong HiCar."
+    case .loginRequired: return "Hãy đăng nhập HiCar để phát \(name)."
+    }
+  }
+}
+
+// Keep hardware access injectable so tests exercise the actual pending/retry loop.
+protocol IOSAudioPlaying: AnyObject {
+  var delegate: AVAudioPlayerDelegate? { get set }
+  var currentTime: TimeInterval { get set }
+  var duration: TimeInterval { get }
+  var volume: Float { get set }
+  func prepareToPlay() -> Bool
+  func play() -> Bool
+  func pause()
+  func stop()
+}
+extension AVAudioPlayer: IOSAudioPlaying {}
+
+@MainActor
+struct IOSPlaybackEnvironment {
+  var configure: () throws -> Void = {
+    try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.duckOthers])
+  }
+  var activate: () throws -> Void = { try AVAudioSession.sharedInstance().setActive(true) }
+  var deactivate: () throws -> Void = {
+    try AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+  }
+  var hasCarRoute: () -> Bool = {
+    let ports: Set<AVAudioSession.Port> = [.carAudio, .bluetoothA2DP, .bluetoothHFP]
+    return AVAudioSession.sharedInstance().currentRoute.outputs.contains { ports.contains($0.portType) }
+  }
+  var protectedDataAvailable: () -> Bool = { UIApplication.shared.isProtectedDataAvailable }
+  var makePlayer: (URL) throws -> IOSAudioPlaying = { try AVAudioPlayer(contentsOf: $0) }
+  var wait: () async throws -> Void = { try await Task.sleep(nanoseconds: 2_500_000_000) }
+}
+
 enum HiCarIOSLog {
   private static let key = "hicar_ios_diagnostics"
   private static let criticalKey = "hicar_ios_critical_diagnostics"
@@ -174,7 +223,9 @@ enum HiCarIOSLog {
 final class HiCarAudioPlayer: NSObject, AVAudioPlayerDelegate {
   static let shared = HiCarAudioPlayer()
   var serviceChannel: FlutterMethodChannel?
-  private var player: AVAudioPlayer?
+  private var player: IOSAudioPlaying?
+  private let environment: IOSPlaybackEnvironment
+  private let prefs: UserDefaults
   private var lease = IOSPlaybackLease()
   private var recoveryTask: Task<Void, Never>?
   private var loopID = 0
@@ -189,12 +240,16 @@ final class HiCarAudioPlayer: NSObject, AVAudioPlayerDelegate {
   private var interrupted = false
   private let pendingKey = "hicar_ios_pending_playback"
 
-  private override init() {
+  init(environment: IOSPlaybackEnvironment? = nil,
+       prefs: UserDefaults = .standard, observeNotifications: Bool = true) {
+    self.environment = environment ?? IOSPlaybackEnvironment()
+    self.prefs = prefs
     super.init()
-    if let old = UserDefaults.standard.string(forKey: pendingKey) {
+    if let old = prefs.string(forKey: pendingKey) {
       HiCarIOSLog.write("E", "mode=ios_carplay job=\(old) state=failed PROCESS_INTERRUPTED before completion")
-      UserDefaults.standard.removeObject(forKey: pendingKey)
+      prefs.removeObject(forKey: pendingKey)
     }
+    guard observeNotifications else { return }
     NotificationCenter.default.addObserver(self, selector: #selector(onInterruption(_:)),
       name: AVAudioSession.interruptionNotification, object: nil)
     NotificationCenter.default.addObserver(self, selector: #selector(onMediaReset),
@@ -216,7 +271,7 @@ final class HiCarAudioPlayer: NSObject, AVAudioPlayerDelegate {
 
   func configureSession() {
     do {
-      try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.duckOthers])
+      try environment.configure()
     } catch { log("E", "SESSION_CATEGORY \(error as NSError)") }
   }
 
@@ -230,14 +285,13 @@ final class HiCarAudioPlayer: NSObject, AVAudioPlayerDelegate {
     duration = 0
     jobID = UUID().uuidString
     state = "waiting_route"
-    UserDefaults.standard.set(jobID, forKey: pendingKey)
+    prefs.set(jobID, forKey: pendingKey)
     log("D", "trigger")
     notifyFlutter("onPlaybackPending", arguments: type)
     return token
   }
 
   private func valid(_ token: Int) -> Bool {
-    let prefs = UserDefaults.standard
     return lease.owns(token) &&
       !(prefs.string(forKey: "flutter.auth_token") ?? "").isEmpty &&
       (!automatic || (prefs.object(forKey: "flutter.auto_play_enabled") as? Bool ?? true))
@@ -265,69 +319,98 @@ final class HiCarAudioPlayer: NSObject, AVAudioPlayerDelegate {
     return true // Accepted, not yet proof of audible playback.
   }
 
-  func playWhenRouteReady(type: String) async -> Bool {
-    if automatic && self.type == type && lease.active { return true }
+  func playWhenRouteReady(type: String) async -> IOSPlaybackOutcome {
+    guard !(prefs.string(forKey: "flutter.auth_token") ?? "").isEmpty else { return .loginRequired }
+    guard prefs.object(forKey: "flutter.auto_play_enabled") as? Bool ?? true else { return .disabled }
+    if automatic && self.type == type && lease.active {
+      return state == "playing" ? .started : .pending
+    }
+    let key = type == "greeting" ? "flutter.greeting_audio_path" : "flutter.goodbye_audio_path"
+    // A configured path can temporarily be inaccessible while the phone is locked.
+    guard !(prefs.string(forKey: key) ?? "").isEmpty else { return .notConfigured }
     let token = begin(type: type, automatic: true, path: nil)
     return await waitAndPlay(token)
   }
 
-  /// No fixed route timeout. iOS still controls the lifetime of a Shortcuts/background task.
-  private func waitAndPlay(_ token: Int) async -> Bool {
+  /// No fixed readiness timeout. iOS still controls the lifetime of background work.
+  private func waitAndPlay(_ token: Int) async -> IOSPlaybackOutcome {
     loopID += 1
     let thisLoop = loopID
     var waitCount = 0
-    configureSession()
     while valid(token) && thisLoop == loopID && !Task.isCancelled {
       if interrupted {
         state = "waiting_focus"
       } else {
-          do {
-            try AVAudioSession.sharedInstance().setActive(true)
-          } catch {
-            state = "waiting_focus"
-            if waitCount % 4 == 0 { log("W", "SESSION_WAIT \(error as NSError)") }
-            do { try await Task.sleep(nanoseconds: 2_500_000_000) } catch { break }
-            waitCount += 1
-            continue
-          }
+        do {
+          // Reapply after a refused start or another audio client changing the session.
+          try environment.configure()
+          try environment.activate()
+        } catch {
+          state = "waiting_focus"
+          if waitCount % 4 == 0 { log("W", "SESSION_WAIT \(error as NSError)") }
+          do { try await environment.wait() } catch { break }
+          waitCount += 1
+          continue
+        }
         let path = jobPath ?? resolvePath(for: type)
         if let path = path, !automatic || hasCarRoute() {
           guard valid(token) && thisLoop == loopID && !Task.isCancelled else { break }
           do {
-            let next = try AVAudioPlayer(contentsOf: URL(fileURLWithPath: path))
+            let next = try environment.makePlayer(URL(fileURLWithPath: path))
             next.delegate = self
-            next.prepareToPlay()
+            let prepared = next.prepareToPlay()
             if position > 0 && position < next.duration { next.currentTime = position }
             next.volume = 1
             player = next
-            guard next.play() else { throw NSError(domain: "HiCarPlayback", code: 1,
-              userInfo: [NSLocalizedDescriptionKey: "AVAudioPlayer.play returned false"]) }
-            duration = next.duration
-            state = "playing"
-            startProgressTimer(token)
-            log("D", "started duration=\(duration)")
-            notifyFlutter("onPlaybackStarted", arguments: type)
-            return true
+            // Neither Boolean result proves a decoder failure. Release the refused
+            // player/session and wait for a fresh start without spending decoder retries.
+            if prepared && next.play() {
+              duration = next.duration
+              state = "playing"
+              startProgressTimer(token)
+              log("D", "started duration=\(duration)")
+              notifyFlutter("onPlaybackStarted", arguments: type)
+              return .started
+            }
+            next.stop()
+            player = nil
+            state = "waiting_start"
+            if waitCount % 4 == 0 {
+              log("W", "START_WAIT prepared=\(prepared) attempt=\(waitCount + 1) " +
+                "appState=\(UIApplication.shared.applicationState.rawValue) " +
+                "protectedDataAvailable=\(environment.protectedDataAvailable())")
+            }
+            do { try environment.deactivate() }
+            catch { log("D", "SESSION_RELEASE \(error as NSError)") }
           } catch {
             player?.stop()
             player = nil
-            guard lease.retry(token) else { fail("PLAYBACK_FAILED \(error as NSError)"); return false }
-            state = "retrying"
-            log("E", "DECODER_RETRY \(error as NSError)")
+            if !environment.protectedDataAvailable() {
+              state = "waiting_file"
+              if waitCount % 4 == 0 { log("W", "FILE_WAIT protected data unavailable \(error as NSError)") }
+            } else {
+              guard lease.retry(token) else { fail("PLAYBACK_FAILED \(error as NSError)"); return .failed }
+              state = "retrying"
+              log("E", "DECODER_RETRY \(error as NSError)")
+            }
           }
         } else {
-          state = "waiting_route"
+          state = path == nil ? "waiting_file" : "waiting_route"
           if waitCount % 4 == 0 { log("W", "route_or_file_pending pathAvailable=\(path != nil)") }
         }
       }
       waitCount += 1
-      do { try await Task.sleep(nanoseconds: 2_500_000_000) } catch { break }
+      do { try await environment.wait() } catch { break }
+    }
+    // A recovery loop may take over the same job after an interruption/reset.
+    if lease.owns(token) && thisLoop != loopID {
+      return state == "playing" ? .started : .pending
     }
     if lease.owns(token) && thisLoop == loopID {
       if Task.isCancelled { fail("SHORTCUT_CANCELLED while pending") }
       else { stop() }
     }
-    return false
+    return .cancelled
   }
 
   private func launchRecovery(_ token: Int) {
@@ -348,10 +431,7 @@ final class HiCarAudioPlayer: NSObject, AVAudioPlayerDelegate {
     }
   }
 
-  private func hasCarRoute() -> Bool {
-    let ports: Set<AVAudioSession.Port> = [.carAudio, .bluetoothA2DP, .bluetoothHFP]
-    return AVAudioSession.sharedInstance().currentRoute.outputs.contains { ports.contains($0.portType) }
-  }
+  private func hasCarRoute() -> Bool { environment.hasCarRoute() }
 
   func stop() {
     let wasActive = lease.active
@@ -370,8 +450,8 @@ final class HiCarAudioPlayer: NSObject, AVAudioPlayerDelegate {
       notifyFlutter("onPlaybackFailed", arguments: nil)
       notifyFlutter("onPlaybackResolved", arguments: jobID)
     }
-    UserDefaults.standard.removeObject(forKey: pendingKey)
-    try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+    prefs.removeObject(forKey: pendingKey)
+    try? environment.deactivate()
   }
 
   private func fail(_ reason: String) {
@@ -382,8 +462,8 @@ final class HiCarAudioPlayer: NSObject, AVAudioPlayerDelegate {
     progressTimer = nil
     player?.stop()
     player = nil
-    UserDefaults.standard.removeObject(forKey: pendingKey)
-    try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+    prefs.removeObject(forKey: pendingKey)
+    try? environment.deactivate()
     notifyFlutter("onPlaybackFailed", arguments: nil)
     notifyFlutter("onNativeError", arguments: "PLAYBACK_FAILED job=\(jobID) mode=ios_carplay \(reason)")
   }
@@ -391,7 +471,7 @@ final class HiCarAudioPlayer: NSObject, AVAudioPlayerDelegate {
   /// Old absolute iOS container paths need a fallback in the actual hicar_audio directory.
   func resolvePath(for type: String) -> String? {
     let key = type == "greeting" ? "flutter.greeting_audio_path" : "flutter.goodbye_audio_path"
-    guard let stored = UserDefaults.standard.string(forKey: key), !stored.isEmpty else { return nil }
+    guard let stored = prefs.string(forKey: key), !stored.isEmpty else { return nil }
     if FileManager.default.fileExists(atPath: stored) { return stored }
     let name = (stored as NSString).lastPathComponent
     if let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
@@ -459,10 +539,10 @@ final class HiCarAudioPlayer: NSObject, AVAudioPlayerDelegate {
     progressTimer?.invalidate()
     progressTimer = nil
     self.player = nil
-    UserDefaults.standard.removeObject(forKey: pendingKey)
+    prefs.removeObject(forKey: pendingKey)
     notifyFlutter("onPlaybackResolved", arguments: jobID)
     notifyFlutter("onPlaybackComplete", arguments: nil)
-    try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+    try? environment.deactivate()
   }
 
   nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
@@ -485,35 +565,37 @@ final class HiCarAudioPlayer: NSObject, AVAudioPlayerDelegate {
 /// Hành động "Phát lời chào" để người dùng gắn vào Tự động hóa cá nhân
 /// (Shortcuts → Tự động hóa → "Khi CarPlay kết nối" → Phát lời chào HiCar).
 @available(iOS 16.0, *)
-struct PlayGreetingIntent: AppIntent {
+struct PlayGreetingIntent: AudioStartingIntent {
   static var title: LocalizedStringResource = "Phát lời chào HiCar"
   static var description = IntentDescription("Phát đoạn lời chào đã cấu hình trong ứng dụng HiCar.")
   static var openAppWhenRun: Bool = false
 
   func perform() async throws -> some IntentResult & ProvidesDialog {
-    let ok = await HiCarAudioPlayer.shared.playWhenRouteReady(type: "greeting")
-    let message = ok
-      ? "Đang phát lời chào."
-      : "CarPlay/Bluetooth chưa sẵn sàng hoặc chưa có nhạc chào."
+    let outcome = await HiCarAudioPlayer.shared.playWhenRouteReady(type: "greeting")
+    let message = outcome.message(type: "greeting")
     return .result(dialog: "\(message)")
   }
 }
 
 /// Hành động "Phát lời tạm biệt".
 @available(iOS 16.0, *)
-struct PlayGoodbyeIntent: AppIntent {
+struct PlayGoodbyeIntent: AudioStartingIntent {
   static var title: LocalizedStringResource = "Phát lời tạm biệt HiCar"
   static var description = IntentDescription("Phát đoạn lời tạm biệt đã cấu hình trong ứng dụng HiCar.")
   static var openAppWhenRun: Bool = false
 
   func perform() async throws -> some IntentResult & ProvidesDialog {
-    let ok = await HiCarAudioPlayer.shared.playWhenRouteReady(type: "goodbye")
-    let message = ok
-      ? "Đang phát lời tạm biệt."
-      : "CarPlay/Bluetooth chưa sẵn sàng hoặc chưa có nhạc tạm biệt."
+    let outcome = await HiCarAudioPlayer.shared.playWhenRouteReady(type: "goodbye")
+    let message = outcome.message(type: "goodbye")
     return .result(dialog: "\(message)")
   }
 }
+
+// AudioStartingIntent preserves iOS 16 support; iOS 17+ uses the renamed protocol.
+@available(iOS 17.0, *)
+extension PlayGreetingIntent: AudioPlaybackIntent {}
+@available(iOS 17.0, *)
+extension PlayGoodbyeIntent: AudioPlaybackIntent {}
 
 /// Hành động "Dừng phát".
 @available(iOS 16.0, *)

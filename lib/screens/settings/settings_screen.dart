@@ -274,7 +274,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: Icon(
                 settings.connectionMode == 'phone_bluetooth'
                     ? Icons.bluetooth_rounded
-                    : (settings.connectionMode == 'phone_android_auto'
+                    : (settings.connectionMode == 'phone_android_auto' ||
+                            settings.connectionMode == 'ios_carplay'
                         ? Icons.directions_car_filled_rounded
                         : Icons.developer_board_rounded),
                 color: Colors.white,
@@ -291,13 +292,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     style: TextStyle(color: AppColors.textHint, fontSize: 9.sp),
                   ),
                   Text(
-                    settings.connectionMode == 'phone_bluetooth'
-                        ? 'Điện thoại + Bluetooth'
-                        : (settings.connectionMode == 'android_screen_mode'
-                            ? 'Màn hình Android'
-                            : (settings.connectionMode == 'android_box_mode'
-                                ? 'Android Box'
-                                : 'Android Auto')),
+                    settings.connectionModeLabel,
                     style: TextStyle(
                       color: AppColors.textPrimary,
                       fontSize: 13.sp,

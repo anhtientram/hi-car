@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../core/constants.dart';
@@ -13,8 +11,9 @@ class SettingsProvider extends ChangeNotifier {
   bool _bluetoothAutoPlay = true;
   bool _androidAutoEnabled = true;
   bool _showNotification = true;
-  String _connectionMode =
-      'android_screen_mode'; // 'android_screen_mode', 'android_box_mode', 'phone_bluetooth'
+  String _connectionMode = defaultTargetPlatform == TargetPlatform.iOS
+      ? AppConstants.iosCarplayMode
+      : 'android_screen_mode';
   bool _playOnOpen = true;
   String? _pendingConnectionMode;
   bool _isBetaMode = false;
@@ -26,6 +25,14 @@ class SettingsProvider extends ChangeNotifier {
   bool get androidAutoEnabled => _androidAutoEnabled;
   bool get showNotification => _showNotification;
   String get connectionMode => _connectionMode;
+  String get connectionModeLabel => switch (_connectionMode) {
+        AppConstants.iosCarplayMode => 'iPhone + CarPlay / Bluetooth',
+        'phone_bluetooth' => 'Điện thoại + Bluetooth',
+        'phone_android_auto' => 'Android Auto',
+        'android_screen_mode' => 'Màn hình Android',
+        'android_box_mode' => 'Android Box',
+        _ => 'Chưa chọn chế độ',
+      };
   String? get pendingConnectionMode => _pendingConnectionMode;
   bool get isBetaMode => _isBetaMode;
 
@@ -41,8 +48,9 @@ class SettingsProvider extends ChangeNotifier {
     _androidAutoEnabled = prefs.getBool('android_auto_enabled') ?? true;
     _showNotification = prefs.getBool('show_notification') ?? true;
     // iOS chỉ có duy nhất chế độ CarPlay; Android giữ mặc định màn hình độ.
-    if (Platform.isIOS) {
+    if (defaultTargetPlatform == TargetPlatform.iOS) {
       _connectionMode = AppConstants.iosCarplayMode;
+      await prefs.setString('connection_mode', _connectionMode);
     } else {
       _connectionMode =
           prefs.getString('connection_mode') ?? 'android_screen_mode';
@@ -102,7 +110,9 @@ class SettingsProvider extends ChangeNotifier {
   }
 
   Future<void> setConnectionMode(String mode) async {
-    _pendingConnectionMode = mode;
+    _pendingConnectionMode = defaultTargetPlatform == TargetPlatform.iOS
+        ? AppConstants.iosCarplayMode
+        : mode;
     notifyListeners();
   }
 

@@ -180,14 +180,17 @@ class _IncidentCard extends StatelessWidget {
               style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
             ),
           ],
-          ExpansionTile(
-            title:
-                const Text('Chi tiết kỹ thuật', style: TextStyle(fontSize: 12)),
-            tilePadding: EdgeInsets.zero,
-            children: [
-              SelectableText(incident.message,
-                  style: const TextStyle(fontSize: 11))
-            ],
+          Material(
+            type: MaterialType.transparency,
+            child: ExpansionTile(
+              title:
+                  const Text('Chi tiết kỹ thuật', style: TextStyle(fontSize: 12)),
+              tilePadding: EdgeInsets.zero,
+              children: [
+                SelectableText(incident.message,
+                    style: const TextStyle(fontSize: 11))
+              ],
+            ),
           ),
           const SizedBox(height: 14),
           Wrap(

@@ -95,17 +95,20 @@ void main() {
     });
   }
 
-  testWidgets('waiting route remains pending well beyond 90 seconds',
-      (tester) async {
-    final provider = AudioProvider();
-    await provider.playGreetingViaNative();
-    status = {'state': 'waiting_route', 'type': 'greeting'};
-    await tester.pump(const Duration(minutes: 10));
-    expect(provider.isNativePlaybackBusy, isTrue);
-    expect(provider.isNativeGreetingPlaying, isFalse);
-    provider.dispose();
-    await tester.pump();
-  });
+  for (final state in ['waiting_route', 'waiting_start', 'waiting_file']) {
+    testWidgets('$state remains pending well beyond 90 seconds', (tester) async {
+      final provider = AudioProvider();
+      // Reconcile even when Flutter missed the native onPlaybackPending callback.
+      status = {'state': state, 'type': 'greeting'};
+      await provider.reconcileNativePlayback();
+      await tester.pump(const Duration(minutes: 10));
+      expect(provider.isNativePlaybackBusy, isTrue);
+      expect(provider.isNativeGreetingPlaying, isFalse);
+      expect(plays, 0);
+      provider.dispose();
+      await tester.pump();
+    });
+  }
 
   for (final mode in [
     'phone_bluetooth',

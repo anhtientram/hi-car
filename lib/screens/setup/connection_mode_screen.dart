@@ -45,7 +45,7 @@ class _ConnectionModeScreenState extends State<ConnectionModeScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Trên iPhone, ứng dụng hoạt động cùng CarPlay. Khi điện thoại kết nối với xe, âm thanh sẽ tự phát ra loa xe. Tự động hóa không mở app cần iOS 16 trở lên; iOS cũ có thể cần mở app thủ công.',
+                  'Trên iPhone, dùng Phím tắt để tự động phát lời chào khi kết nối CarPlay hoặc Bluetooth với xe. Cả hai dùng chung lời chào đã cài trong HiCar. Tự động hóa không mở app cần iOS 16 trở lên.',
                   style: TextStyle(
                     color: AppColors.textSecondary,
                     fontSize: 14.sp,
@@ -55,9 +55,9 @@ class _ConnectionModeScreenState extends State<ConnectionModeScreen> {
                 _buildModeCard(
                   context,
                   mode: AppConstants.iosCarplayMode,
-                  title: 'iPhone + CarPlay',
+                  title: 'iPhone + CarPlay / Bluetooth',
                   description:
-                      'Phát lời chào/tạm biệt khi kết nối CarPlay. Dùng app Phím tắt để tự động phát khi lên xe.',
+                      'Dùng app Phím tắt để phát lời chào khi kết nối CarPlay hoặc Bluetooth với xe.',
                   icon: Icons.directions_car_filled_rounded,
                   activeMode: AppConstants.iosCarplayMode,
                   onTap: () {},
@@ -139,14 +139,14 @@ class _ConnectionModeScreenState extends State<ConnectionModeScreen> {
           ),
           SizedBox(height: 14.h),
           step('1', 'Mở app "Phím tắt" (Shortcuts) → tab "Tự động hoá" → "+".'),
-          step('2', 'Chọn "Tạo Tự động hoá Cá nhân" → "CarPlay" → "Khi kết nối".'),
+          step('2', 'Chọn "CarPlay" → "Khi kết nối", hoặc "Bluetooth" → chọn thiết bị của xe → "Khi kết nối".'),
           step('3',
               'Chọn "Thêm tác vụ", tìm ứng dụng này và chọn "Phát lời chào HiCar".'),
           step('4',
-              'Tắt "Hỏi trước khi chạy" để xe tự phát lời chào ngay khi kết nối.'),
+              'Chọn "Chạy ngay lập tức" hoặc tắt "Hỏi trước khi chạy". Chỉ cần một tự động hóa cho mỗi lần lên xe.'),
           SizedBox(height: 4.h),
           Text(
-            'Mẹo: tạo thêm một Tự động hoá "Khi ngắt kết nối" → "Phát lời tạm biệt HiCar".',
+            'Hãy chọn lời chào trong HiCar trước. Nếu âm thanh của xe chưa sẵn sàng, tác vụ sẽ chờ để phát.',
             style: TextStyle(
                 color: AppColors.textHint,
                 fontSize: 11.5.sp,

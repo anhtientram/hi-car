@@ -405,7 +405,7 @@ class _PermissionConfigScreenState extends State<PermissionConfigScreen>
                 bullet(
                   Icons.bolt_rounded,
                   'Thiết lập Phím tắt (quan trọng)',
-                  'Mở app "Phím tắt" → Tự động hoá → "Khi CarPlay kết nối" → thêm tác vụ "Phát lời chào HiCar", rồi tắt "Hỏi trước khi chạy".',
+                  'Mở app "Phím tắt" → Tự động hoá → "CarPlay" hoặc "Bluetooth" (chọn thiết bị của xe) → "Khi kết nối" → thêm "Phát lời chào HiCar" → chọn "Chạy ngay lập tức" hoặc tắt "Hỏi trước khi chạy".',
                 ),
                 bullet(
                   Icons.mic_rounded,
