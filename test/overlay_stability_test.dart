@@ -10,6 +10,7 @@ void main() {
   const channel = MethodChannel('x-slayer/overlay_channel');
   late bool allowed;
   late bool active;
+  late int closeCalls;
   Completer<void>? showing;
   setUp(() async {
     await AppLogger.instance.flush();
@@ -20,6 +21,7 @@ void main() {
     });
     allowed = true;
     active = false;
+    closeCalls = 0;
     showing = null;
     binding.defaultBinaryMessenger.setMockMethodCallHandler(channel,
         (call) async {
@@ -33,6 +35,10 @@ void main() {
           active = true;
           return true;
         case 'closeOverlay':
+          closeCalls++;
+          // flutter_overlay_window 0.5.0 has this native bug: when the
+          // service is already stopped, closeOverlay never completes.
+          if (!active) return Completer<bool?>().future;
           active = false;
           return true;
         default:
@@ -67,6 +73,16 @@ void main() {
     showing!.complete();
     await Future.wait([show, hide]);
     expect(active, isFalse);
+    provider.dispose();
+  });
+  test('hiding an inactive overlay cannot poison the next show request',
+      () async {
+    final provider = OverlayProvider.forTest();
+    await provider.init();
+    await provider.hideOverlay();
+    expect(closeCalls, 0);
+    await provider.showOverlay();
+    expect(active, isTrue);
     provider.dispose();
   });
   for (final mode in [

@@ -173,7 +173,15 @@ class OverlayProvider extends ChangeNotifier {
           prefs.getString('connection_mode') == 'android_screen_mode' &&
           (prefs.getString('auth_token') ?? '').isNotEmpty;
       if (!allowed) {
-        await FlutterOverlayWindow.closeOverlay();
+        // flutter_overlay_window 0.5.0 never completes closeOverlay() when its
+        // service is already stopped. Calling it during app startup used to
+        // block this queue forever, so the later paused/show request never ran.
+        // Query first and only close a service that is actually active.
+        final active = await FlutterOverlayWindow.isActive();
+        if (active) {
+          await FlutterOverlayWindow.closeOverlay()
+              .timeout(const Duration(seconds: 3));
+        }
       } else {
         await checkPermission();
         if (!_hasPermission) {
@@ -181,8 +189,9 @@ class OverlayProvider extends ChangeNotifier {
               'Thiếu quyền SYSTEM_ALERT_WINDOW để hiển thị bong bóng.');
           return;
         }
-        if (!_desiredVisible)
+        if (!_desiredVisible) {
           return; // Resumed while permission check was pending.
+        }
         if (!await FlutterOverlayWindow.isActive()) {
           await FlutterOverlayWindow.showOverlay(
             enableDrag: true,
