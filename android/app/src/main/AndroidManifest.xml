@@ -99,9 +99,6 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Automotive greeting audio playback at device boot" />
-            <intent-filter>
-                <action android:name="android.media.browse.MediaBrowserService" />
-            </intent-filter>
         </service>
 
         <!-- ===== FLUTTER OVERLAY WINDOW SERVICE ===== -->
@@ -119,11 +116,6 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
-
-        <!-- ===== ANDROID AUTO ===== -->
-        <meta-data
-            android:name="com.google.android.gms.car.application"
-            android:resource="@xml/automotive_app_desc" />
 
     </application>
 
